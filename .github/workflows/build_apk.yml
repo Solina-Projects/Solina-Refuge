@@ -1,4 +1,4 @@
-name: Build Solina APK
+name: Build Solina Refuge APK
 
 on:
   push:
@@ -35,9 +35,42 @@ jobs:
       - name: Build debug APK
         run: gradle :app:assembleDebug --stacktrace
 
+      # امضای انتشار: فقط وقتی Secretها هست keystore را باز می‌کند و مسیر/رمزها را
+      # به‌عنوان متغیر محیطی می‌دهد. گریدل فقط وقتی هر چهار مقدار رسیده باشد امضا
+      # می‌کند (app/build.gradle.kts)؛ وگرنه release بدون امضا ساخته می‌شود (مثل قبل).
+      # روی PR از فورک، Secretها خالی‌اند و این مرحله رد می‌شود.
+      # نکته: نمی‌شود secrets را در if گذاشت (گیت‌هاب رد می‌کند)؛ پس چک خالی‌بودن
+      # داخل خود اسکریپت انجام می‌شود.
+      - name: Prepare release keystore (if secrets present)
+        env:
+          SOLINA_RELEASE_KEYSTORE_B64: ${{ secrets.SOLINA_RELEASE_KEYSTORE_B64 }}
+          SOLINA_KEYSTORE_PASSWORD: ${{ secrets.SOLINA_KEYSTORE_PASSWORD }}
+          SOLINA_KEY_PASSWORD: ${{ secrets.SOLINA_KEY_PASSWORD }}
+          SOLINA_KEY_ALIAS: ${{ secrets.SOLINA_KEY_ALIAS }}
+        run: |
+          if [ -z "$SOLINA_RELEASE_KEYSTORE_B64" ]; then echo "No release keystore secret, skipping signing setup"; exit 0; fi
+          echo "$SOLINA_RELEASE_KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/solina-release.keystore"
+          echo "SOLINA_KEYSTORE_FILE=$RUNNER_TEMP/solina-release.keystore" >> "$GITHUB_ENV"
+          echo "SOLINA_KEYSTORE_PASSWORD=$SOLINA_KEYSTORE_PASSWORD" >> "$GITHUB_ENV"
+          echo "SOLINA_KEY_ALIAS=$SOLINA_KEY_ALIAS" >> "$GITHUB_ENV"
+          echo "SOLINA_KEY_PASSWORD=$SOLINA_KEY_PASSWORD" >> "$GITHUB_ENV"
+
       # مطمئن می‌شویم نسخهٔ release (با R8 و حذف منابع) هم ساخته می‌شود و قوانین shrink چیزی را نمی‌شکند.
-      - name: Build release (unsigned, R8 minified)
+      - name: Build release (R8 minified)
         run: gradle :app:assembleRelease --stacktrace
+
+      # اثر انگشت گواهی APK امضاشده باید با مقدار مورد انتظار بخواند؛
+      # اگر apksigner پیدا نشد یا بیلد بدون Secret بود، این مرحله رد می‌شود.
+      - name: Verify release signature fingerprint
+        env:
+          SOLINA_RELEASE_KEYSTORE_B64: ${{ secrets.SOLINA_RELEASE_KEYSTORE_B64 }}
+        run: |
+          if [ -z "$SOLINA_RELEASE_KEYSTORE_B64" ]; then echo "No release keystore secret, skipping fingerprint check"; exit 0; fi
+          APK=app/build/outputs/apk/release/app-release.apk
+          APKSIGNER=$(find "${ANDROID_HOME:-$HOME}" /opt -name apksigner -type f 2>/dev/null | head -1)
+          if [ -z "$APKSIGNER" ] || [ ! -f "$APK" ]; then echo "apksigner or APK not found, skipping fingerprint check"; exit 0; fi
+          "$APKSIGNER" verify --print-certs "$APK"
+          "$APKSIGNER" verify --print-certs "$APK" | grep -qi "03b600658806a03d5f56b610e6c9ba51e62dd292c09b530e96c8e3aa8a139cd7" || { echo "::error::Release APK fingerprint does not match the expected release certificate."; exit 1; }
 
       # هر خطای lint بیلد را می‌شکند.
       - name: Android lint
@@ -46,7 +79,7 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: Solina-preview-debug-apk
+          name: Solina-Refuge-preview-debug-apk
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 30
@@ -57,7 +90,7 @@ jobs:
           f=app/build/intermediates/lint_intermediate_text_report/debug/lintReportDebug/lint-results-debug.txt
           if [ -f "$f" ]; then
             echo "== lint findings =="
-            grep -E "(Error|Warning): " "$f" | sed 's#.*/passwordmanager/##' | head -80
+            grep -E "(Error|Warning): " "$f" | sed 's#.*/refuge/##' | head -80
           fi
 
       - name: Upload lint report

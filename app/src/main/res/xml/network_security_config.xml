@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!-- سنجاق گواهی (Certificate Pinning) فقط برای api.pwnedpasswords.com —
+         تنها میزبان ثابتی که اپ با آن حرف می‌زند (بررسی افشای رمز، k-Anonymity).
+         پین‌ها روی گواهی‌های میانی (Intermediate CA) گذاشته شده‌اند، نه روی برگ (Leaf)،
+         چون برگ هر ~۹۰ روز عوض می‌شود و پین برگ هر سه ماه اپ را می‌شکست.
+         چهار پین = چهار زنجیرهٔ میانی‌ای که تاکنون برای ‎*.pwnedpasswords.com دیده شده‌اند
+         (بررسی‌شده در ۲۰۲۶-۱۱-۲۲ از رکوردهای Certificate Transparency):
+           - Google Trust Services WE1 (ECDSA) — تا ۲۰۲۹-۰۲-۲۰
+           - Google Trust Services WR1 (RSA) — تا ۲۰۲۹-۰۲-۲۰
+           - Sectigo Public Server Authentication CA DV E36 — تا ۲۰۳۶-۰۳-۲۱
+           - Sectigo Public Server Authentication CA DV R36 — تا ۲۰۳۶-۰۳-۲۱
+         اگر HIBP زنجیرهٔ میانی جدیدی بیاورد، فقط «بررسی افشا» ناموفق می‌شود، نه خزانه:
+         BreachChecker.checkOnline مقدار null برمی‌گرداند و UI «اتصال برقرار نشد» نشان می‌دهد.
+         پین‌ها باید دوره‌ای بازبینی شوند؛ تاریخ انقضای pin-set زیر ۲۰۲۸-۰۶-۰۱ است
+         (قبل از انقضای زودترین میانی) تا فراموش نشوند.
+         میزبان‌های WebDAV که کاربر خودش تنظیم می‌کند پین نمی‌شوند، چون میزبانشان
+         از قبل معلوم نیست و پین‌کردنشان غیرممکن است؛ آن‌ها با اعتماد سیستمی کار می‌کنند.
+         گواهی‌های OAuth (Google/GitHub) هم پین نمی‌شوند، چون میزبان و زنجیره‌شان
+         دست گوگل/گیت‌هاب است و هر تغییری ورود را می‌شکست. -->
+    <domain-config cleartextTrafficPermitted="false">
+        <domain includeSubdomains="true">api.pwnedpasswords.com</domain>
+        <pin-set expiration="2028-06-01">
+            <pin digest="SHA-256">kIdp6NNEd8wsugYyyIYFsi1ylMCED3hZbSR8ZFsa/A4=</pin>
+            <pin digest="SHA-256">yDu9og255NN5GEf+Bwa9rTrqFQ0EydZ0r1FCh9TdAW4=</pin>
+            <pin digest="SHA-256">ZSagvDzjltLkewXEBuDxIzpW/dpVw1Juvvmd0hhkzdY=</pin>
+            <pin digest="SHA-256">a9khLOZJxlnJyrxstg/P+seiDCm+Yf3OsrXyFocBaI0=</pin>
+        </pin-set>
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </domain-config>
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>
