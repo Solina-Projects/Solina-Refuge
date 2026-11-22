@@ -35,11 +35,32 @@ jobs:
       - name: Build debug APK
         run: gradle :app:assembleDebug --stacktrace
 
-      # مطمئن می‌شویم نسخهٔ release (با R8 و حذف منابع) هم ساخته می‌شود و قوانین shrink چیزی را نمی‌شکند.
+      - name: Prepare release keystore (if secrets present)
+        if: ${{ secrets.SOLINA_RELEASE_KEYSTORE_B64 != '' }}
+        env:
+          SOLINA_RELEASE_KEYSTORE_B64: ${{ secrets.SOLINA_RELEASE_KEYSTORE_B64 }}
+          SOLINA_KEYSTORE_PASSWORD: ${{ secrets.SOLINA_KEYSTORE_PASSWORD }}
+          SOLINA_KEY_PASSWORD: ${{ secrets.SOLINA_KEY_PASSWORD }}
+          SOLINA_KEY_ALIAS: ${{ secrets.SOLINA_KEY_ALIAS }}
+        run: |
+          echo "$SOLINA_RELEASE_KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/solina-release.keystore"
+          echo "SOLINA_KEYSTORE_FILE=$RUNNER_TEMP/solina-release.keystore" >> "$GITHUB_ENV"
+          echo "SOLINA_KEYSTORE_PASSWORD=$SOLINA_KEYSTORE_PASSWORD" >> "$GITHUB_ENV"
+          echo "SOLINA_KEY_ALIAS=$SOLINA_KEY_ALIAS" >> "$GITHUB_ENV"
+          echo "SOLINA_KEY_PASSWORD=$SOLINA_KEY_PASSWORD" >> "$GITHUB_ENV"
+
       - name: Build release (unsigned, R8 minified)
         run: gradle :app:assembleRelease --stacktrace
 
-      # هر خطای lint بیلد را می‌شکند.
+      - name: Verify release signature fingerprint
+        if: ${{ secrets.SOLINA_RELEASE_KEYSTORE_B64 != '' }}
+        run: |
+          APK=app/build/outputs/apk/release/app-release.apk
+          APKSIGNER=$(find "${ANDROID_HOME:-$HOME}" /opt -name apksigner -type f 2>/dev/null | head -1)
+          if [ -z "$APKSIGNER" ] || [ ! -f "$APK" ]; then echo "apksigner or APK not found, skipping fingerprint check"; exit 0; fi
+          "$APKSIGNER" verify --print-certs "$APK"
+          "$APKSIGNER" verify --print-certs "$APK" | grep -qi "03b600658806a03d5f56b610e6c9ba51e62dd292c09b530e96c8e3aa8a139cd7" || { echo "::error::Release APK fingerprint does not match the expected release certificate."; exit 1; }
+
       - name: Android lint
         run: gradle :app:lintDebug --stacktrace
 
