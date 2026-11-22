@@ -117,8 +117,22 @@ class PinUnlockManager(context: Context) {
 
     fun hasPin(): Boolean = store.getString(KEY_BLOB) != null
 
+    /**
+     * شناسهٔ خزانه‌ای که پین به آن تعلق دارد؛ null یعنی پینِ قدیمیِ پیش از چندخزانه‌ای
+     * که همیشه به خزانهٔ پیش‌فرض نسبت داده می‌شود.
+     */
+    fun pinVaultId(): String? = prefs.getString(KEY_VAULT_ID, null)
+
+    /** آیا برای این خزانه پین تنظیم شده است؟ */
+    fun hasPinFor(vaultId: String): Boolean {
+        if (!hasPin()) return false
+        val owner = pinVaultId()
+        return owner == null && vaultId == app.solina.refuge.core.crypto.MultiVaultDesign.DEFAULT_VAULT_ID ||
+            owner == vaultId
+    }
+
     /** تنظیم یا تغییر پین؛ فقط وقتی صدا زده می‌شود که Vault Key در دسترس است (خزانه باز). */
-    fun setupPin(pin: CharArray, vaultKey: ByteArray): Boolean {
+    fun setupPin(pin: CharArray, vaultKey: ByteArray, vaultId: String = app.solina.refuge.core.crypto.MultiVaultDesign.DEFAULT_VAULT_ID): Boolean {
         if (!PinCrypto.isValidPin(pin)) return false
         return runCatching {
             val salt = randomBytes(PinCrypto.SALT_SIZE)
@@ -133,7 +147,7 @@ class PinUnlockManager(context: Context) {
                 val packed = Base64.getEncoder().encodeToString(salt) + "." +
                     Base64.getEncoder().encodeToString(wrapped)
                 store.putString(KEY_BLOB, packed)
-                prefs.edit().putInt(KEY_ATTEMPTS, 0).remove(KEY_LAST_FAIL_ELAPSED).apply()
+                prefs.edit().putString(KEY_VAULT_ID, vaultId).putInt(KEY_ATTEMPTS, 0).remove(KEY_LAST_FAIL_ELAPSED).apply()
                 _pinEnabled.value = true
                 true
             } finally {
@@ -143,7 +157,8 @@ class PinUnlockManager(context: Context) {
     }
 
     /** بررسی پین بدون تغییر نشست؛ فقط برای تأیید پین فعلی هنگام تغییر پین (از داخل خزانهٔ باز). */
-    fun verifyPin(pin: CharArray): Boolean {
+    fun verifyPin(pin: CharArray, vaultId: String = app.solina.refuge.core.crypto.MultiVaultDesign.DEFAULT_VAULT_ID): Boolean {
+        if (!hasPinFor(vaultId)) return false
         val packed = store.getString(KEY_BLOB) ?: return false
         val (salt, wrapped) = parseBlob(packed) ?: return false
         val pinBytes = runCatching { PinCrypto.pinToBytes(pin) }.getOrNull() ?: return false
@@ -162,7 +177,9 @@ class PinUnlockManager(context: Context) {
         }
     }
 
-    fun unlockWithPin(pin: CharArray): PinResult {
+    fun unlockWithPin(pin: CharArray, vaultId: String = app.solina.refuge.core.crypto.MultiVaultDesign.DEFAULT_VAULT_ID): PinResult {
+        // پینِ خزانهٔ دیگر اینجا کار نمی‌کند؛ کاربر باید با رمز همان خزانه باز کند.
+        if (!hasPinFor(vaultId)) return PinResult.NoPin
         val packed = store.getString(KEY_BLOB) ?: return PinResult.NoPin
         val attempts = prefs.getInt(KEY_ATTEMPTS, 0)
         val delay = UnlockBackoff.delayMillis(attempts)
@@ -229,5 +246,6 @@ class PinUnlockManager(context: Context) {
         private const val KEY_BLOB = "pin_blob"
         private const val KEY_ATTEMPTS = "pin_attempts"
         private const val KEY_LAST_FAIL_ELAPSED = "pin_last_fail_elapsed"
+        private const val KEY_VAULT_ID = "pin_vault_id"
     }
 }

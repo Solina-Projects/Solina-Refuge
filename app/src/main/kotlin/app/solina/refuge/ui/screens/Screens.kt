@@ -67,6 +67,7 @@ import app.solina.refuge.core.security.AutoLockOption
 import app.solina.refuge.core.security.ClipboardClearOption
 import app.solina.refuge.core.security.ListDensity
 import app.solina.refuge.core.security.ThemeMode
+import app.solina.refuge.core.security.VaultInfo
 import app.solina.refuge.core.storage.Flag
 import app.solina.refuge.core.storage.ChangedField
 import app.solina.refuge.core.storage.HistoryDiff
@@ -1890,6 +1891,12 @@ fun SettingsScreen(
     onWipeLocalVault: () -> Unit = {},
     onDiagnostics: () -> Unit,
     onLock: () -> Unit,
+    /** چندخزانه‌ای: فهرست خزانه‌ها + خزانهٔ فعال + تعویض/ساخت/حذف. */
+    vaults: List<VaultInfo> = emptyList(),
+    activeVaultId: String = app.solina.refuge.core.crypto.MultiVaultDesign.DEFAULT_VAULT_ID,
+    onSwitchVault: (VaultInfo) -> Unit = {},
+    onCreateVault: () -> Unit = {},
+    onDeleteVault: (VaultInfo) -> Unit = {},
 ) {
     val c = Refuge.colors
     val str = Refuge.strings
@@ -1897,6 +1904,51 @@ fun SettingsScreen(
 
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
         ScreenTitle(str.tabSettings)
+        // ───── خزانه‌ها ─────
+        Card {
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text("خزانه‌ها", color = c.text, fontSize = 15.sp, fontWeight = FontWeight.Bold)
+                Text(
+                    "هر خزانه رمز و ۲۴ کلمهٔ بازیابی مخصوص خودش را دارد؛ ورودی‌های خزانه‌ها از هم جدا هستند.",
+                    color = c.muted, fontSize = 12.sp, lineHeight = 18.sp,
+                )
+                if (vaults.isEmpty()) {
+                    Text("هنوز خزانه‌ای نیست.", color = c.muted, fontSize = 13.sp, modifier = Modifier.padding(top = 6.dp))
+                }
+                for (vault in vaults) {
+                    val isActive = vault.id == activeVaultId
+                    Box(Modifier.fillMaxWidth().height(1.dp).background(c.divider))
+                    Row(
+                        Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(Modifier.weight(1f).clickable(role = Role.Button, onClick = { if (!isActive) onSwitchVault(vault) })) {
+                            Text(vault.name, color = c.text, fontSize = 15.sp)
+                            Text(
+                                if (isActive) "خزانهٔ فعال — برای دیدن ورودی‌هایش باز است" else "برای تعویض به این خزانه بزنید",
+                                color = c.muted, fontSize = 12.sp,
+                            )
+                        }
+                        if (isActive) {
+                            Pill("فعال", c.primaryContainer, c.onPrimaryContainer)
+                        } else {
+                            Text(
+                                "حذف",
+                                color = c.secondary, fontSize = 13.sp, fontWeight = FontWeight.Medium,
+                                modifier = Modifier.padding(start = 12.dp).clickable(role = Role.Button) { onDeleteVault(vault) },
+                            )
+                        }
+                    }
+                }
+                Box(Modifier.fillMaxWidth().height(1.dp).background(c.divider))
+                Row(
+                    Modifier.fillMaxWidth().height(48.dp).clickable(role = Role.Button, onClick = onCreateVault),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text("＋ خزانهٔ جدید", color = c.primary, fontSize = 15.sp, fontWeight = FontWeight.Medium)
+                }
+            }
+        }
         Card {
             Column {
                 Row(Modifier.fillMaxWidth().height(56.dp), verticalAlignment = Alignment.CenterVertically) {

@@ -67,6 +67,9 @@ class VaultFiles(private val dir: File) {
         unlockState.delete()
     }
 
+    /** حذف کامل پوشهٔ این خزانه (هدر، بیومتریک، وضعیت قفل و فایل‌های موقت). */
+    fun deleteVaultDir(): Boolean = dir.deleteRecursively()
+
     private fun atomicWrite(target: File, bytes: ByteArray) {
         val tmp = File(dir, target.name + ".tmp")
         FileOutputStream(tmp).use { out ->
@@ -77,6 +80,49 @@ class VaultFiles(private val dir: File) {
         if (!tmp.renameTo(target)) {
             tmp.delete()
             throw IOException("cannot replace ${target.name}")
+        }
+    }
+
+    companion object {
+        /** پیشوند پوشهٔ هر خزانه زیر پوشهٔ ریشهٔ refuge: `vault-<id>`. */
+        const val VAULT_DIR_PREFIX = "vault-"
+
+        /** پوشهٔ خزانه با شناسهٔ داده‌شده. شناسه فقط می‌تواند حرف، رقم، `-` یا `_` باشد. */
+        fun forVault(root: File, vaultId: String): VaultFiles {
+            require(vaultId.isNotEmpty() && vaultId.length <= 64 &&
+                vaultId.all { it.isLetterOrDigit() || it == '-' || it == '_' }) {
+                "invalid vault id"
+            }
+            return VaultFiles(File(root, VAULT_DIR_PREFIX + vaultId))
+        }
+
+        /**
+         * مهاجرت نصب تک‌خزانه‌ای: فایل‌های خزانهٔ قدیمی که مستقیم در پوشهٔ ریشه بودند
+         * (`vault.hdr` و همراهانش) بدون هیچ رمزگذاریِ دوباره به پوشهٔ `vault-default`
+         * منتقل می‌شوند. اگر هدرِ مقصد از قبل هست، فایل‌های قدیمی دست نمی‌خورند.
+         * @return true اگر انتقالی انجام شد.
+         */
+        fun migrateLegacy(root: File): Boolean {
+            val legacyHeader = File(root, "vault.hdr")
+            if (!legacyHeader.isFile) return false
+            val targetDir = File(root, VAULT_DIR_PREFIX + app.solina.refuge.core.crypto.MultiVaultDesign.DEFAULT_VAULT_ID)
+            if (File(targetDir, "vault.hdr").isFile) return false
+            if (!targetDir.exists() && !targetDir.mkdirs()) return false
+            var moved = false
+            for (name in listOf("vault.hdr", "biometric.bin", "unlock.state")) {
+                val src = File(root, name)
+                if (src.isFile) {
+                    // renameTo روی یک فایل‌سیستم همیشه جواب می‌دهد؛ اگر نشد، کپی + حذف.
+                    if (!src.renameTo(File(targetDir, name))) {
+                        runCatching {
+                            src.copyTo(File(targetDir, name), overwrite = true)
+                            src.delete()
+                        }
+                    }
+                    moved = true
+                }
+            }
+            return moved
         }
     }
 }

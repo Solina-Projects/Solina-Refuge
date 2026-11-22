@@ -16,30 +16,44 @@ import org.junit.Test
 open class FakeStore : ItemStore {
     val items = LinkedHashMap<String, StoredItem>()
     val hist = ArrayList<StoredHistory>()
-    override suspend fun all() = items.values.toList()
-    override suspend fun get(id: String) = items[id]
+    private val dues = LinkedHashMap<String, TaskDueMeta>()
+    override suspend fun all(vaultId: String) = items.values.filter { it.vaultId == vaultId }
+    override suspend fun get(id: String, vaultId: String) = items[id]?.takeIf { it.vaultId == vaultId }
     override suspend fun save(item: StoredItem, archivedPrevious: StoredHistory?, keepHistory: Int) {
         if (archivedPrevious != null) {
             hist.add(archivedPrevious)
-            val mine = hist.filter { it.itemId == item.id }.sortedByDescending { it.rev }
+            val mine = hist.filter { it.itemId == item.id && it.vaultId == item.vaultId }.sortedByDescending { it.rev }
             hist.removeAll(mine.drop(keepHistory).toSet())
         }
         items[item.id] = item
     }
-    override suspend fun delete(id: String, deletedAt: Long, newRev: Long, archivedPrevious: StoredHistory?) {
+    override suspend fun delete(id: String, deletedAt: Long, newRev: Long, archivedPrevious: StoredHistory?, vaultId: String) {
         if (archivedPrevious != null) {
             hist.add(archivedPrevious)
-            val mine = hist.filter { it.itemId == id }.sortedByDescending { it.rev }
+            val mine = hist.filter { it.itemId == id && it.vaultId == vaultId }.sortedByDescending { it.rev }
             hist.removeAll(mine.drop(VaultRepository.MAX_HISTORY).toSet())
         }
-        items[id] = StoredItem(id, newRev, deletedAt, deletedAt, ByteArray(0), ByteArray(0))
+        items[id] = StoredItem(id, newRev, deletedAt, deletedAt, ByteArray(0), ByteArray(0), vaultId)
     }
-    override suspend fun purge(id: String) {
-        hist.removeAll { it.itemId == id }
-        items.remove(id)
+    override suspend fun purge(id: String, vaultId: String) {
+        hist.removeAll { it.itemId == id && it.vaultId == vaultId }
+        if (items[id]?.vaultId == vaultId) items.remove(id)
     }
-    override suspend fun history(itemId: String) = hist.filter { it.itemId == itemId }.sortedByDescending { it.rev }
-    override suspend fun wipeAll() { items.clear(); hist.clear() }
+    override suspend fun history(itemId: String, vaultId: String) = hist.filter { it.itemId == itemId && it.vaultId == vaultId }.sortedByDescending { it.rev }
+    override suspend fun wipeAll() { items.clear(); hist.clear(); dues.clear() }
+    override suspend fun wipeVault(vaultId: String) {
+        items.entries.removeAll { it.value.vaultId == vaultId }
+        hist.removeAll { it.vaultId == vaultId }
+        dues.keys.removeAll { it.startsWith("$vaultId|") }
+    }
+    override suspend fun saveTaskDue(id: String, dueAt: Long, notifiedAt: Long, vaultId: String) {
+        dues["$vaultId|$id"] = TaskDueMeta(id, dueAt, notifiedAt)
+    }
+    override suspend fun deleteTaskDue(id: String, vaultId: String) {
+        dues.remove("$vaultId|$id")
+    }
+    override suspend fun allTaskDues(vaultId: String): List<TaskDueMeta> =
+        dues.filterKeys { it.startsWith("$vaultId|") }.values.toList()
 }
 
 class RepositoryTest {
