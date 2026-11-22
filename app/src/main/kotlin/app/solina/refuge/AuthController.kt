@@ -397,11 +397,12 @@ class AuthController(
     }
 
     /** @param onResult true اگر باز شد؛ false در لغو یا خطا (رمز اصلی همیشه در دسترس است).
-     *  @param onIntegrityFailed وقتی امضای release تأیید نشده باشد، به‌جای تلاش بیومتریک صدا زده می‌شود. */
+     *  @param onIntegrityFailed وقتی امضای release تأیید نشده باشد، به‌جای تلاش بیومتریک صدا زده می‌شود.
+     *  ترتیب پارامترها عمدی است: onResult آخر است تا لامبدای دنباله‌دارِ فراخواننده‌ها به آن بخورد. */
     fun unlockWithBiometric(
         activity: FragmentActivity,
-        onResult: (Boolean) -> Unit,
         onIntegrityFailed: (() -> Unit)? = null,
+        onResult: (Boolean) -> Unit,
     ) {
         if (container.integrityBlocked) {
             onIntegrityFailed?.invoke()
