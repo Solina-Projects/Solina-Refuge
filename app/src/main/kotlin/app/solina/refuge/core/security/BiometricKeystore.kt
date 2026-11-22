@@ -48,11 +48,23 @@ object BiometricKeystore {
         return generator.generateKey()
     }
 
+    /**
+     * AAD blob بیومتریک به خزانه بسته است تا blob خزانه‌ای دیگر (جابه‌جا شده بین
+     * پوشه‌های خزانه) کلید اشتباه را به نشست ندهد. blobهای قدیمیِ بدون AAD پس از
+     * این تغییر باز نمی‌شوند؛ کاربر با رمز اصلی وارد می‌شود و بیومتریک را دوباره
+     * فعال می‌کند (رمز اصلی همیشه معتبر می‌ماند).
+     */
+    private fun aad(vaultId: String): ByteArray =
+        "refuge/biometric/v1|$vaultId".toByteArray(Charsets.US_ASCII)
+
     /** رمزگذار برای فعال‌سازی: کلید تازه می‌سازد. باید به BiometricPrompt.CryptoObject داده شود. */
-    fun newEnrollCipher(): Cipher {
+    fun newEnrollCipher(vaultId: String = app.solina.refuge.core.crypto.MultiVaultDesign.DEFAULT_VAULT_ID): Cipher {
         deleteKey()
         val key = createKey()
-        return Cipher.getInstance("AES/GCM/NoPadding").apply { init(Cipher.ENCRYPT_MODE, key) }
+        return Cipher.getInstance("AES/GCM/NoPadding").apply {
+            init(Cipher.ENCRYPT_MODE, key)
+            updateAAD(aad(vaultId))
+        }
     }
 
     /** پس از تأیید بیومتریک: Vault Key را با cipher آماده‌شده می‌پیچد. */
@@ -62,12 +74,13 @@ object BiometricKeystore {
      * رمزگشا برای باز کردن.
      * @throws KeyPermanentlyInvalidatedException اگر اثر انگشت جدیدی اضافه شده؛ باید blob پاک شود.
      */
-    fun newUnlockCipher(blob: ByteArray): Cipher {
+    fun newUnlockCipher(blob: ByteArray, vaultId: String = app.solina.refuge.core.crypto.MultiVaultDesign.DEFAULT_VAULT_ID): Cipher {
         require(blob.size > IV_SIZE) { "bad blob" }
         val key = keyStore().getKey(ALIAS, null) as? SecretKey ?: throw IllegalStateException("no key")
         val iv = blob.copyOfRange(0, IV_SIZE)
         return Cipher.getInstance("AES/GCM/NoPadding").apply {
             init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(128, iv))
+            updateAAD(aad(vaultId))
         }
     }
 

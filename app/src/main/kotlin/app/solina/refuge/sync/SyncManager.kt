@@ -354,14 +354,21 @@ class SyncManager(
         }
     }
 
-    /** اسنپ‌شات RFGB v1 با رمز مشتق از کلید خزانه + هرس نسخه‌های قدیمی (نگه‌داشتن ۵ نسخه). */
+    /** اسنپ‌شات RFGB v1/v2 با رمز مشتق از کلید خزانه + هرس نسخه‌های قدیمی (نگه‌داشتن ۵ نسخه).
+     * پیوست‌ها هم در اسنپ‌شات می‌آیند (بکاپ v2)؛ نسخهٔ قبل بی‌صدا پیوست‌ها را جا می‌انداخت
+     * و بازیابیِ اسنپ‌شات، ورودی‌ها را بدون پیوست برمی‌گرداند. */
     private suspend fun writeVersionedSnapshot(vaultKey: ByteArray): Boolean {
         val remote = activeRemote() ?: return false
-        val payloads = repository().items.value.map { it.payload }
+        val items = repository().items.value
         val password = AutoBackupKey.backupPasswordChars(vaultKey)
         return try {
             val header = runCatching { files().readHeader().encode() }.getOrNull()
-            val bytes = Backup.encode(payloads, password, System.currentTimeMillis(), KdfParams.DEFAULT, header, vaultId = vaultId())
+            val atts = repository().exportAttachmentsForBackup(items.map { it.id })
+            val bytes = try {
+                Backup.encode(items.map { it.payload }, password, System.currentTimeMillis(), KdfParams.DEFAULT, header, attachments = atts, vaultId = vaultId())
+            } finally {
+                atts.forEach { it.data.fill(0) }
+            }
             val name = BackupRetention.snapshotName(System.currentTimeMillis())
             remote.write(name, bytes)
             val names = runCatching { remote.list() }.getOrDefault(emptyList())

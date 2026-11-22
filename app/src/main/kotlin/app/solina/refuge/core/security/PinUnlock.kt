@@ -7,6 +7,7 @@ import app.solina.refuge.core.crypto.Argon2id
 import app.solina.refuge.core.crypto.AuthenticationFailedException
 import app.solina.refuge.core.crypto.Hkdf
 import app.solina.refuge.core.crypto.KdfParams
+import app.solina.refuge.core.crypto.MultiVaultDesign
 import app.solina.refuge.core.crypto.randomBytes
 import app.solina.refuge.core.crypto.wipe
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -53,7 +54,13 @@ object PinCrypto {
     val PIN_KDF: KdfParams = KdfParams.DEFAULT
 
     private val PIN_INFO = "refuge/wrap/pin/v1".toByteArray(Charsets.US_ASCII)
-    private val PIN_AAD = "refuge/pin/v1".toByteArray(Charsets.US_ASCII)
+
+    /** AAD بسته‌بندی پین به خزانه بسته است تا blob پینِ خزانه‌ای دیگر (یا جابه‌جا شده
+     * با دست‌کاری SharedPreferences) کلید خزانهٔ اشتباه را به نشست ندهد. */
+    private const val PIN_AAD_PREFIX = "refuge/pin/v1/"
+    private val PIN_AAD_LEGACY = "refuge/pin/v1".toByteArray(Charsets.US_ASCII)
+
+    fun pinAad(vaultId: String): ByteArray = (PIN_AAD_PREFIX + vaultId).toByteArray(Charsets.US_ASCII)
 
     fun isValidPin(pin: CharArray): Boolean =
         pin.size in MIN_PIN_LENGTH..MAX_PIN_LENGTH && pin.all { it in '0'..'9' }
@@ -77,12 +84,26 @@ object PinCrypto {
         }
     }
 
-    fun wrapVaultKey(pinKek: ByteArray, vaultKey: ByteArray): ByteArray =
-        Aead.seal(pinKek, vaultKey, PIN_AAD)
+    fun wrapVaultKey(pinKek: ByteArray, vaultKey: ByteArray, vaultId: String = MultiVaultDesign.DEFAULT_VAULT_ID): ByteArray =
+        Aead.seal(pinKek, vaultKey, pinAad(vaultId))
+
+    /** نتیجهٔ باز کردن: [wasLegacy] یعنی blob با AAD قدیمی (بدون شناسهٔ خزانه) بسته شده بود
+     * و فراخواننده باید آن را با AAD جدید دوباره ببندد (مهاجرت یک‌باره، بدون تغییر پین). */
+    data class PinUnwrapResult(val vaultKey: ByteArray, val wasLegacy: Boolean)
 
     /** @throws AuthenticationFailedException اگر پین نادرست باشد یا blob دست‌کاری شده باشد. */
-    fun unwrapVaultKey(pinKek: ByteArray, wrapped: ByteArray): ByteArray =
-        Aead.open(pinKek, wrapped, PIN_AAD)
+    fun unwrapVaultKeyDetailed(pinKek: ByteArray, wrapped: ByteArray, vaultId: String = MultiVaultDesign.DEFAULT_VAULT_ID): PinUnwrapResult {
+        runCatching { Aead.open(pinKek, wrapped, pinAad(vaultId)) }.getOrNull()?.let {
+            return PinUnwrapResult(it, wasLegacy = false)
+        }
+        // مهاجرت: blobهای ساخته‌شده پیش از اتصال AAD به خزانه (AAD قدیمی «refuge/pin/v1»).
+        val legacy = Aead.open(pinKek, wrapped, PIN_AAD_LEGACY)
+        return PinUnwrapResult(legacy, wasLegacy = true)
+    }
+
+    /** @throws AuthenticationFailedException اگر پین نادرست باشد یا blob دست‌کاری شده باشد. */
+    fun unwrapVaultKey(pinKek: ByteArray, wrapped: ByteArray, vaultId: String = MultiVaultDesign.DEFAULT_VAULT_ID): ByteArray =
+        unwrapVaultKeyDetailed(pinKek, wrapped, vaultId).vaultKey
 
     fun shouldWipePin(failedAttempts: Int): Boolean = failedAttempts >= MAX_PIN_ATTEMPTS
 }
@@ -143,7 +164,7 @@ class PinUnlockManager(context: Context) {
                 pinBytes.wipe()
             }
             try {
-                val wrapped = PinCrypto.wrapVaultKey(kek, vaultKey)
+                val wrapped = PinCrypto.wrapVaultKey(kek, vaultKey, vaultId)
                 val packed = Base64.getEncoder().encodeToString(salt) + "." +
                     Base64.getEncoder().encodeToString(wrapped)
                 store.putString(KEY_BLOB, packed)
@@ -168,12 +189,24 @@ class PinUnlockManager(context: Context) {
             pinBytes.wipe()
         }
         return try {
-            PinCrypto.unwrapVaultKey(kek, wrapped).wipe()
+            val result = PinCrypto.unwrapVaultKeyDetailed(kek, wrapped, vaultId)
+            if (result.wasLegacy) migrateLegacyBlob(salt, result.vaultKey, kek, vaultId)
+            result.vaultKey.wipe()
             true
         } catch (e: Exception) {
             false
         } finally {
             kek.wipe()
+        }
+    }
+
+    /** blob قدیمی (AAD بدون شناسهٔ خزانه) را با همان salt و پین، با AAD خزانه دوباره می‌بندد. */
+    private fun migrateLegacyBlob(salt: ByteArray, vaultKey: ByteArray, pinKek: ByteArray, vaultId: String) {
+        runCatching {
+            val wrapped = PinCrypto.wrapVaultKey(pinKek, vaultKey, vaultId)
+            val packed = Base64.getEncoder().encodeToString(salt) + "." +
+                Base64.getEncoder().encodeToString(wrapped)
+            store.putString(KEY_BLOB, packed)
         }
     }
 
@@ -199,7 +232,9 @@ class PinUnlockManager(context: Context) {
             pinBytes.wipe()
         }
         try {
-            val vk = PinCrypto.unwrapVaultKey(kek, wrapped)
+            val result = PinCrypto.unwrapVaultKeyDetailed(kek, wrapped, vaultId)
+            if (result.wasLegacy) migrateLegacyBlob(salt, result.vaultKey, kek, vaultId)
+            val vk = result.vaultKey
             prefs.edit().putInt(KEY_ATTEMPTS, 0).remove(KEY_LAST_FAIL_ELAPSED).apply()
             _pinEnabled.value = true
             return PinResult.Success(vk)

@@ -88,6 +88,40 @@ class AttachmentsTest {
         }
     }
 
+    /** رگرسیون بازبینی امنیتی: افزودن پیوست در خزانهٔ غیرپیش‌فرض نباید با
+     * «item not found» رد شود (قبلاً store.get بدون شناسهٔ خزانه صدا زده می‌شد). */
+    @Test fun addAttachmentWorksInNonDefaultVault() = runBlocking {
+        val store = FakeAttachmentStore()
+        val session = unlockedSession()
+        var n = 0
+        var m = 0
+        val r = VaultRepository(store, session, clock = { t += 10; t }, newId = { "id${++n}" }, newFileId = { "file${++m}" }, vaultId = { "work" })
+        val item = r.add(login("GitHub"))
+        val meta = r.addAttachment(item.id, "a.txt", "text/plain", "hello".toByteArray())
+        assertEquals(item.id, meta.itemId)
+        assertArrayEquals("hello".toByteArray(), r.openAttachment(meta.fileId))
+    }
+
+    /** پیوستِ خزانهٔ دیگر با شناسهٔ فایلِ شناخته‌شده باز یا حذف نمی‌شود. */
+    @Test fun attachmentOfOtherVaultIsNotOpenable() = runBlocking {
+        val store = FakeAttachmentStore()
+        var n = 0
+        var m = 0
+        val sessionA = unlockedSession()
+        val repoA = VaultRepository(store, sessionA, clock = { t += 10; t }, newId = { "id${++n}" }, newFileId = { "file${++m}" }, vaultId = { "a" })
+        val item = repoA.add(login("GitHub"))
+        val meta = repoA.addAttachment(item.id, "a.txt", "text/plain", "hello".toByteArray())
+
+        val sessionB = unlockedSession()
+        val repoB = VaultRepository(store, sessionB, clock = { t += 10; t }, newId = { "id${++n}" }, newFileId = { "file${++m}" }, vaultId = { "b" })
+        assertThrows(IllegalArgumentException::class.java) {
+            runBlocking { repoB.openAttachment(meta.fileId) }
+        }
+        repoB.removeAttachment(meta.fileId)
+        // حذفِ خزانهٔ دیگر بی‌اثر است؛ پیوست سر جایش می‌ماند.
+        assertArrayEquals("hello".toByteArray(), repoA.openAttachment(meta.fileId))
+    }
+
     @Test fun removeAttachment() = runBlocking {
         val r = repo()
         val item = r.add(login("GitHub"))

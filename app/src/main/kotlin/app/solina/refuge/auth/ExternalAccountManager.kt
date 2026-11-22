@@ -124,6 +124,7 @@ class ExternalAccountManager(context: Context) {
             requestMethod = "POST"
             connectTimeout = 12_000
             readTimeout = 12_000
+            instanceFollowRedirects = false
             doOutput = true
             setRequestProperty("Accept", "application/json")
             setRequestProperty("Content-Type", "application/x-www-form-urlencoded")
@@ -145,6 +146,7 @@ class ExternalAccountManager(context: Context) {
             requestMethod = "GET"
             connectTimeout = 12_000
             readTimeout = 12_000
+            instanceFollowRedirects = false
             setRequestProperty("Authorization", "Bearer $accessToken")
             setRequestProperty("Accept", "application/json")
             setRequestProperty("User-Agent", "Solina-Refuge")
@@ -180,6 +182,7 @@ class ExternalAccountManager(context: Context) {
             requestMethod = "GET"
             connectTimeout = 10_000
             readTimeout = 10_000
+            instanceFollowRedirects = false
             setRequestProperty("Authorization", "Bearer $accessToken")
             setRequestProperty("Accept", "application/json")
             setRequestProperty("User-Agent", "Solina-Refuge")

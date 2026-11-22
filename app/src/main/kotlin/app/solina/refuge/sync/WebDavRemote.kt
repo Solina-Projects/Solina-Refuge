@@ -29,6 +29,26 @@ class WebDavRemote(
         "Basic " + Base64.getEncoder().encodeToString("$username:$password".toByteArray(Charsets.UTF_8))
     } else null
 
+    companion object {
+        /** سقف خواندن یک پاسخ از سرور؛ رکورد همگام‌سازی حداکثر ~۴ مگابایت و مانیفست
+         * حداکثر ~۴ مگابایت است، پس ۸ مگابایت (مثل FolderRemote) امن است. سرور
+         * به‌خطرافتاده نمی‌تواند با پاسخ غول‌پیکر حافظهٔ برنامه را پر کند. */
+        const val MAX_READ_BYTES = 8 * 1024 * 1024
+
+        /** خواندن با سقف؛ null اگر ورودی بیش از سقف باشد (به‌جای OutOfMemory). */
+        internal fun readCapped(input: java.io.InputStream, maxBytes: Int = MAX_READ_BYTES): ByteArray? {
+            val out = java.io.ByteArrayOutputStream()
+            val buf = ByteArray(16 * 1024)
+            while (true) {
+                val n = input.read(buf)
+                if (n < 0) break
+                out.write(buf, 0, n)
+                if (out.size() > maxBytes) return null
+            }
+            return out.toByteArray()
+        }
+    }
+
     private fun open(url: String, method: String): HttpURLConnection {
         val conn = URL(url).openConnection() as HttpURLConnection
         // برخی پیاده‌سازی‌های HttpURLConnection متد PROPFIND/MKCOL را مستقیم می‌پذیرند یا با override کار می‌کنند.
@@ -81,7 +101,9 @@ class WebDavRemote(
             val code = conn.responseCode
             if (code == 404) return@withContext emptyList()
             if (code !in setOf(200, 207)) throw IOException("PROPFIND failed: HTTP $code")
-            val xml = conn.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
+            val raw = conn.inputStream.use { readCapped(it) }
+                ?: throw IOException("PROPFIND response too large")
+            val xml = String(raw, Charsets.UTF_8)
             WebDavProtocol.parsePropfindFileNames(xml, rootPath)
         } finally {
             conn.disconnect()
@@ -94,7 +116,7 @@ class WebDavRemote(
             val code = conn.responseCode
             if (code == 404) return@withContext null
             if (code !in 200..299) throw IOException("GET failed: HTTP $code")
-            conn.inputStream.use { it.readBytes() }
+            conn.inputStream.use { readCapped(it) }
         } finally {
             conn.disconnect()
         }

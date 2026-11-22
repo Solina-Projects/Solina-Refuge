@@ -15,7 +15,7 @@ import javax.crypto.spec.GCMParameterSpec
  * برای نگهداری امن تنظیمات حساس جانبی (اعتبارنامهٔ WebDAV و فرادادهٔ حساب‌های خارجی).
  * هیچ داده‌ای به‌صورت متن خام در SharedPreferences ذخیره نمی‌شود.
  */
-class KeystoreSecretStore(context: Context, prefName: String = "refuge_secure_store") {
+class KeystoreSecretStore(context: Context, private val prefName: String = "refuge_secure_store") {
     private val prefs = context.applicationContext.getSharedPreferences(prefName, Context.MODE_PRIVATE)
 
     companion object {
@@ -25,6 +25,14 @@ class KeystoreSecretStore(context: Context, prefName: String = "refuge_secure_st
         private const val IV_SIZE = 12
         private const val TAG_BITS = 128
     }
+
+    /**
+     * هر مقدار به نام خودش و نام فروشگاه بسته می‌شود (AAD)، تا جابه‌جایی دو مقدار
+     * رمزگذاری‌شده در SharedPreferences (مثلاً blob پین با رمز WebDAV) شناسایی شود.
+     * مقدارهای قدیمیِ بدون AAD یک‌بار خوانده و با AAD دوباره نوشته می‌شوند.
+     */
+    private fun aad(key: String): ByteArray =
+        "refuge/keystore/v1|$prefName|$key".toByteArray(Charsets.UTF_8)
 
     private fun getOrCreateKey(): SecretKey {
         val ks = KeyStore.getInstance(PROVIDER).apply { load(null) }
@@ -46,6 +54,7 @@ class KeystoreSecretStore(context: Context, prefName: String = "refuge_secure_st
     fun putString(key: String, value: String) {
         val cipher = Cipher.getInstance(TRANSFORMATION)
         cipher.init(Cipher.ENCRYPT_MODE, getOrCreateKey())
+        cipher.updateAAD(aad(key))
         val iv = cipher.iv
         val ct = cipher.doFinal(value.toByteArray(Charsets.UTF_8))
         val packed = ByteArray(iv.size + ct.size)
@@ -64,7 +73,19 @@ class KeystoreSecretStore(context: Context, prefName: String = "refuge_secure_st
             val ct = packed.copyOfRange(IV_SIZE, packed.size)
             val cipher = Cipher.getInstance(TRANSFORMATION)
             cipher.init(Cipher.DECRYPT_MODE, getOrCreateKey(), GCMParameterSpec(TAG_BITS, iv))
+            cipher.updateAAD(aad(key))
             String(cipher.doFinal(ct), Charsets.UTF_8)
+        }.getOrNull() ?: runCatching {
+            // مهاجرت: مقدار قدیمیِ بدون AAD؛ اگر خوانده شد، با AAD دوباره نوشته می‌شود.
+            val packed = Base64.getDecoder().decode(encoded)
+            if (packed.size <= IV_SIZE) return null
+            val iv = packed.copyOfRange(0, IV_SIZE)
+            val ct = packed.copyOfRange(IV_SIZE, packed.size)
+            val cipher = Cipher.getInstance(TRANSFORMATION)
+            cipher.init(Cipher.DECRYPT_MODE, getOrCreateKey(), GCMParameterSpec(TAG_BITS, iv))
+            val plain = String(cipher.doFinal(ct), Charsets.UTF_8)
+            runCatching { putString(key, plain) }
+            plain
         }.getOrNull()
     }
 
