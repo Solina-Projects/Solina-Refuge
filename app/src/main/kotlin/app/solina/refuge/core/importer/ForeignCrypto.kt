@@ -222,6 +222,7 @@ internal object ForeignCrypto {
         val mac = try { b64(parts[2]) } catch (e: IllegalArgumentException) { throw ImportException("ساختار فایل Bitwarden خراب است.") }
         if (!MessageDigest.isEqual(hmacSha256(macKey, iv, ct), mac)) throw WrongImportPasswordException()
         return try {
+            // codeql[java/weak-cryptographic-algorithm]: Bitwarden EncString type 2 mandates AES-256-CBC (their format, not our choice); decrypt-only. HMAC-SHA256 over iv||ct is verified with a constant-time comparison BEFORE decryption, so no padding oracle exists.
             val c = Cipher.getInstance("AES/CBC/PKCS5Padding")
             c.init(Cipher.DECRYPT_MODE, SecretKeySpec(encKey, "AES"), IvParameterSpec(iv))
             c.doFinal(ct)
