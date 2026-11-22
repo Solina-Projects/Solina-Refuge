@@ -23,10 +23,16 @@ data class BackupHeaderInfo(
     val totalBytes: Int,
 )
 
-/** نتیجهٔ کامل رمزگشایی بکاپ شامل ورودی‌ها و در صورت وجود، هدر اصلی خزانه (رمز اصلی و ۲۴ کلمهٔ قبلی). */
+/**
+ * نتیجهٔ کامل رمزگشایی بکاپ شامل ورودی‌ها و در صورت وجود، هدر اصلی خزانه (رمز اصلی و ۲۴ کلمهٔ قبلی).
+ * [vaultId]/[vaultName] خزانهٔ مبدأ را می‌گویند (بکاپ‌های قدیمی ندارند و null می‌مانند)؛
+ * بازیابی همیشه به خزانهٔ فعالِ فعلی وارد می‌شود.
+ */
 data class DecodedBackup(
     val items: List<ItemPayload>,
     val vaultHeader: ByteArray?,
+    val vaultId: String? = null,
+    val vaultName: String? = null,
 )
 
 /**
@@ -82,17 +88,26 @@ object Backup {
         return BackupHeaderInfo(version = bytes[4].toInt() and 0xff, kdf = params, totalBytes = bytes.size)
     }
 
+    /**
+     * بکاپ خزانهٔ فعال. [vaultId]/[vaultName] فقط به‌عنوان برچسبِ مبدأ در JSON می‌آیند؛
+     * قالب باینری RFGB v1 و رمز بکاپ دست نمی‌خورند، پس بکاپ‌های قدیمی هنوز خوانده می‌شوند
+     * و نسخه‌های قدیمیِ برنامه هم می‌توانند این بکاپ را بخوانند (فیلدهای اضافه نادیده گرفته می‌شوند).
+     */
     fun encode(
         items: List<ItemPayload>,
         password: CharArray,
         now: Long,
         params: KdfParams = KdfParams.DEFAULT,
         vaultHeader: ByteArray? = null,
+        vaultId: String? = null,
+        vaultName: String? = null,
     ): ByteArray {
         val json = JSONObject().apply {
             put("format", "refuge-backup")
             put("version", 1)
             put("exportedAt", now)
+            if (!vaultId.isNullOrBlank()) put("vaultId", vaultId)
+            if (!vaultName.isNullOrBlank()) put("vaultName", vaultName)
             if (vaultHeader != null && vaultHeader.isNotEmpty()) {
                 put("vaultHeader", Base64.getEncoder().encodeToString(vaultHeader))
             }
@@ -118,12 +133,14 @@ object Backup {
         now: Long,
         params: KdfParams = KdfParams.DEFAULT,
         vaultHeader: ByteArray? = null,
+        vaultId: String? = null,
+        vaultName: String? = null,
     ): ByteArray {
         val otpItems = items.filter { it.totpSecret.isNotBlank() }
         if (otpItems.isEmpty()) {
             throw BackupFormatException("هیچ حساب Authenticator (کد TOTP/HOTP) برای بکاپ وجود ندارد.")
         }
-        return encode(otpItems, password, now, params, vaultHeader)
+        return encode(otpItems, password, now, params, vaultHeader, vaultId, vaultName)
     }
 
     /** رمزگشایی کامل بکاپ (ورودی‌ها + هدر اصلی خزانه در صورت وجود). */
@@ -146,7 +163,12 @@ object Backup {
             }
             val vhB64 = root.optString("vaultHeader", "")
             val vh = if (vhB64.isNotEmpty()) runCatching { Base64.getDecoder().decode(vhB64) }.getOrNull() else null
-            return DecodedBackup(items = items, vaultHeader = vh)
+            return DecodedBackup(
+                items = items,
+                vaultHeader = vh,
+                vaultId = root.optString("vaultId", "").takeIf { it.isNotEmpty() },
+                vaultName = root.optString("vaultName", "").takeIf { it.isNotEmpty() },
+            )
         } catch (e: JSONException) {
             throw BackupFormatException("محتوای بکاپ خراب است.")
         } finally {

@@ -54,6 +54,12 @@ class SyncEngine(
     private val remote: SyncRemote,
     private val clock: () -> Long = System::currentTimeMillis,
     private val epochStore: SyncEpochStore = InMemorySyncEpochStore(),
+    /**
+     * خزانه‌ای که همگام می‌شود (فقط خزانهٔ فعال). رکوردهای خزانه‌های دیگر که در پوشهٔ
+     * ریموت باشند، با کلید این خزانه باز نمی‌شوند و در مرحلهٔ دریافت رد می‌شوند
+     * (rejected)؛ پس همگام‌سازی هرگز دادهٔ خزانهٔ دیگر را وارد این خزانه نمی‌کند.
+     */
+    private val vaultId: String = app.solina.refuge.core.crypto.MultiVaultDesign.DEFAULT_VAULT_ID,
 ) {
     companion object {
         /** نگهداری Tombstone به مدت ۹۰ روز برای انتشار حذف به دستگاه‌های آفلاین. */
@@ -104,7 +110,7 @@ class SyncEngine(
             // ───── ۱) دریافت ─────
             val rawList = remote.list()
             val remoteFiles = rawList.mapNotNull { n -> SyncRecord.parseName(n)?.let { n to it } }
-            val localAll = store.all().associateBy { it.id }
+            val localAll = store.all(vaultId).associateBy { it.id }
             for ((id, files) in remoteFiles.groupBy { it.second.id }) {
                 val l = localAll[id]
                 val localName = l?.let { SyncRecord.fileName(it.id, it.rev, SyncRecord.encode(it, macKey)) }
@@ -131,7 +137,7 @@ class SyncEngine(
 
             // ───── ۲) ارسال ─────
             val present = remote.list().toSet()
-            val local = store.all()
+            val local = store.all(vaultId)
             val now = clock()
             for (item in local) {
                 // Tombstoneهای بسیار قدیمی (> ۹۰ روز) دیگر روی پوشهٔ جدید دوباره ارسال نمی‌شوند.
@@ -179,7 +185,7 @@ class SyncEngine(
     private enum class Outcome { Adopted, Conflict, Ignored }
 
     private suspend fun apply(rec: StoredItem, macKey: ByteArray): Outcome {
-        val cur = store.get(rec.id)
+        val cur = store.get(rec.id, vaultId)
         if (cur == null) {
             adopt(rec, null)
             return Outcome.Adopted
@@ -191,21 +197,24 @@ class SyncEngine(
         val now = clock()
 
         return if (remoteWins) {
-            val archive = if (bothLive) StoredHistory(cur.id, cur.rev, now, cur.wrappedItemKey, cur.blob) else null
+            val archive = if (bothLive) StoredHistory(cur.id, cur.rev, now, cur.wrappedItemKey, cur.blob, vaultId) else null
             adopt(rec, archive)
             if (concurrent) Outcome.Conflict else Outcome.Adopted
         } else if (concurrent) {
             // بازندهٔ هم‌زمان: محتوایش را در تاریخچه نگه می‌داریم (یک‌بار؛ تکراری نمی‌شود).
-            val known = store.history(cur.id).any { it.rev == rec.rev && it.blob.contentEquals(rec.blob) }
+            val known = store.history(cur.id, vaultId).any { it.rev == rec.rev && it.blob.contentEquals(rec.blob) }
             if (known) Outcome.Ignored else {
-                store.save(cur, StoredHistory(rec.id, rec.rev, now, rec.wrappedItemKey, rec.blob), VaultRepository.MAX_HISTORY)
+                store.save(cur, StoredHistory(rec.id, rec.rev, now, rec.wrappedItemKey, rec.blob, vaultId), VaultRepository.MAX_HISTORY)
                 Outcome.Conflict
             }
         } else Outcome.Ignored
     }
 
     private suspend fun adopt(rec: StoredItem, archive: StoredHistory?) {
-        if (rec.deletedAt != null) store.delete(rec.id, rec.deletedAt, rec.rev)
-        else store.save(rec, archive, VaultRepository.MAX_HISTORY)
+        // رکورد ریموت شناسهٔ خزانه ندارد؛ چون با کلید همین خزانه باز شده، به همین خزانه تعلق دارد.
+        val scoped = StoredItem(rec.id, rec.rev, rec.updatedAt, rec.deletedAt, rec.wrappedItemKey, rec.blob, vaultId)
+        val deletedAt = rec.deletedAt
+        if (deletedAt != null) store.delete(scoped.id, deletedAt, scoped.rev, vaultId = vaultId)
+        else store.save(scoped, archive, VaultRepository.MAX_HISTORY)
     }
 }

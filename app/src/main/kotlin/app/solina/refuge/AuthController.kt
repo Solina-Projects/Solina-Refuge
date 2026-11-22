@@ -16,6 +16,9 @@ import app.solina.refuge.core.security.KdfCalibrator
 import app.solina.refuge.core.security.PinResult
 import app.solina.refuge.core.security.UnlockBackoff
 import app.solina.refuge.core.security.UnlockState
+import app.solina.refuge.core.security.VaultFiles
+import app.solina.refuge.core.security.VaultInfo
+import app.solina.refuge.core.security.VaultRegistry
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -27,6 +30,23 @@ sealed interface UnlockResult {
     data class Wait(val millis: Long) : UnlockResult
 }
 
+/** نتیجهٔ حذف خزانه. */
+sealed interface VaultDeleteResult {
+    /** حذف شد؛ [newActiveId] خزانهٔ فعالِ جدید است (اگر خزانهٔ فعال حذف شده باشد). */
+    data class Ok(val newActiveId: String) : VaultDeleteResult
+    /** فقط یک خزانه مانده است؛ حذف آخرین خزانه ممنوع است. */
+    data object LastVault : VaultDeleteResult
+    /** خزانه‌ای با این شناسه نیست. */
+    data object NotFound : VaultDeleteResult
+}
+
+/**
+ * خزانهٔ تازه‌ساخته‌شده که هنوز ثبت نشده است. هدر فقط بعد از اینکه کاربر عبارت
+ * بازیابی ۲۴ کلمه‌ای را تأیید کرد، با [AuthController.commitVault] نوشته و ثبت می‌شود؛
+ * تا آن لحظه هیچ فایل یا ورودی‌ای در فهرست خزانه‌ها ساخته نمی‌شود.
+ */
+class PendingVault(val info: VaultInfo, val created: CreatedVault)
+
 /** منطق ساخت، باز کردن و بازیابی خزانه؛ رابط فقط این کلاس را صدا می‌زند. */
 class AuthController(
     private val container: AppContainer,
@@ -35,15 +55,144 @@ class AuthController(
 ) {
     private val files get() = container.files
     private val session get() = container.session
+    private val registry: VaultRegistry get() = container.vaultRegistry
+    private fun filesFor(vaultId: String): VaultFiles = VaultFiles.forVault(container.vaultRoot, vaultId)
 
     fun hasVault() = files.hasVault()
     fun hasBiometric() = files.hasBiometric() && BiometricKeystore.hasKey()
 
+    // ───── چندخزانه‌ای ─────
+
+    /** فهرست همهٔ خزانه‌ها به ترتیب ساخت. */
+    fun vaults(): List<VaultInfo> = registry.vaults()
+
+    /** شناسهٔ خزانهٔ فعال. */
+    fun activeVaultId(): String = registry.activeId()
+
+    /** خزانهٔ فعال. */
+    fun activeVault(): VaultInfo? = registry.active()
+
+    /**
+     * ساخت خزانهٔ جدید در حافظه (با رمز و ۲۴ کلمهٔ مخصوص خودش؛ کلیدش از هیچ خزانهٔ
+     * دیگری مشتق نمی‌شود). روی دیسک نوشته نمی‌شود تا کاربر عبارت بازیابی را تأیید
+     * کند ([commitVault]).
+     */
+    suspend fun createVault(name: String, password: CharArray): PendingVault = withContext(Dispatchers.Default) {
+        val info = registry.reserve(name)
+        PendingVault(info, VaultCrypto.create(password, KdfCalibrator.pickOnDevice()))
+    }
+
+    /**
+     * ثبت خزانهٔ تازه و فعال‌کردنش. اگر نوشتن هدر ناموفق باشد، ثبت بازگردانده می‌شود
+     * تا خزانهٔ خالی در فهرست نماند. نشست با کلید خزانهٔ جدید باز می‌شود.
+     */
+    fun commitVault(pending: PendingVault) {
+        registry.register(pending.info)
+        try {
+            filesFor(pending.info.id).writeHeader(pending.created.header)
+        } catch (e: Exception) {
+            registry.remove(pending.info.id)
+            throw e
+        }
+        registry.setActive(pending.info.id)
+        filesFor(pending.info.id).writeUnlockState(UnlockState(0, 0, 0L))
+        // هدرِ خزانهٔ قبلی نباید به‌اشتباه به ریموتِ همگام‌سازی برود.
+        container.sync.clearHeaderDirty()
+        session.unlock(pending.created.vaultKey)
+    }
+
+    /**
+     * تعویض خزانهٔ فعال با رمز همان خزانه. رمز اول روی هدرِ خزانهٔ مقصد آزموده می‌شود؛
+     * اگر درست نباشد، خزانهٔ فعال عوض نمی‌شود و نشستِ خزانهٔ فعلی دست نمی‌خورد.
+     * در موفقیت، کلید خزانهٔ قبلی از حافظه پاک و خزانهٔ جدید باز می‌شود.
+     */
+    suspend fun switchVault(id: String, password: CharArray): UnlockResult = withContext(Dispatchers.Default) {
+        if (!registry.exists(id)) return@withContext UnlockResult.Corrupt
+        val targetFiles = filesFor(id)
+        val wait = remainingWaitMillis(targetFiles)
+        if (wait > 0) return@withContext UnlockResult.Wait(wait)
+        val header = try {
+            targetFiles.readHeader()
+        } catch (e: CorruptVaultException) {
+            return@withContext UnlockResult.Corrupt
+        }
+        try {
+            val vk = VaultCrypto.unlockWithPassword(header, password)
+            session.lock()
+            registry.setActive(id)
+            targetFiles.writeUnlockState(UnlockState(0, 0, 0L))
+            container.sync.clearHeaderDirty()
+            session.unlock(vk)
+            UnlockResult.Success
+        } catch (e: AuthenticationFailedException) {
+            val s = targetFiles.readUnlockState()
+            targetFiles.writeUnlockState(UnlockState(s.failedAttempts + 1, wallClock(), elapsedClock()))
+            UnlockResult.WrongPassword
+        }
+    }
+
+    /** تعویض خزانهٔ فعال با عبارت بازیابی ۲۴ کلمه‌ای مخصوص همان خزانه. */
+    suspend fun switchVaultWithRecovery(id: String, phrase: String): UnlockResult = withContext(Dispatchers.Default) {
+        if (!registry.exists(id)) return@withContext UnlockResult.Corrupt
+        val targetFiles = filesFor(id)
+        val wait = remainingWaitMillis(targetFiles)
+        if (wait > 0) return@withContext UnlockResult.Wait(wait)
+        val header = try {
+            targetFiles.readHeader()
+        } catch (e: CorruptVaultException) {
+            return@withContext UnlockResult.Corrupt
+        }
+        try {
+            val vk = VaultCrypto.unlockWithRecovery(header, phrase)
+            session.lock()
+            registry.setActive(id)
+            targetFiles.writeUnlockState(UnlockState(0, 0, 0L))
+            container.sync.clearHeaderDirty()
+            session.unlock(vk)
+            UnlockResult.Success
+        } catch (e: InvalidRecoveryPhraseException) {
+            UnlockResult.InvalidPhrase
+        } catch (e: AuthenticationFailedException) {
+            val s = targetFiles.readUnlockState()
+            targetFiles.writeUnlockState(UnlockState(s.failedAttempts + 1, wallClock(), elapsedClock()))
+            UnlockResult.WrongPassword
+        }
+    }
+
+    /**
+     * حذف خزانه با تأیید صریح کاربر (تأیید در UI گرفته می‌شود). هدر، بیومتریک و همهٔ
+     * ورودی‌های آن خزانه برای همیشه پاک می‌شوند؛ حذف آخرین خزانه ممنوع است.
+     * اگر خزانهٔ فعال حذف شود، نشست قفل و اولین خزانهٔ باقی‌مانده فعال می‌شود.
+     */
+    suspend fun deleteVault(id: String): VaultDeleteResult = withContext(Dispatchers.Default) {
+        val all = registry.vaults()
+        if (all.none { it.id == id }) return@withContext VaultDeleteResult.NotFound
+        if (all.size <= 1) return@withContext VaultDeleteResult.LastVault
+        val wasActive = registry.activeId() == id
+        if (wasActive) {
+            session.lock()
+            registry.setActive(all.first { it.id != id }.id)
+        }
+        runCatching { container.itemStore.wipeVault(id) }
+        filesFor(id).deleteVaultDir()
+        registry.remove(id)
+        // پین فقط به یک خزانه تعلق دارد؛ اگر پینِ خزانهٔ حذف‌شده بود، غیرفعال می‌شود.
+        if (container.pinUnlock.pinVaultId() == id) container.pinUnlock.disablePin()
+        container.sync.clearHeaderDirty()
+        VaultDeleteResult.Ok(registry.activeId())
+    }
+
     fun remainingWaitMillis(
         now: Long = wallClock(),
         elapsedNow: Long = elapsedClock(),
+    ): Long = remainingWaitMillis(files, now, elapsedNow)
+
+    private fun remainingWaitMillis(
+        targetFiles: VaultFiles,
+        now: Long = wallClock(),
+        elapsedNow: Long = elapsedClock(),
     ): Long {
-        val state = files.readUnlockState()
+        val state = targetFiles.readUnlockState()
         val delay = UnlockBackoff.delayMillis(state.failedAttempts)
         if (delay <= 0L) return 0L
 
@@ -176,26 +325,30 @@ class AuthController(
 
     // ───── پین (میان‌بر؛ جایگزین رمز اصلی نیست، نگاه کنید به PinUnlock.kt) ─────
 
-    fun hasPin() = container.pinUnlock.hasPin()
+    /**
+     * آیا برای خزانهٔ فعال پین تنظیم شده است؟ پین فقط به یک خزانه تعلق دارد؛
+     * با تعویض خزانه، پینِ خزانهٔ دیگر کار نمی‌کند.
+     */
+    fun hasPin() = container.pinUnlock.hasPinFor(registry.activeId())
 
     /** تنظیم یا تغییر پین؛ فقط وقتی خزانه باز است (Vault Key در نشست است). */
     fun setupPin(pin: CharArray): Boolean {
         val vk = session.keyCopy() ?: return false
         try {
-            return container.pinUnlock.setupPin(pin, vk)
+            return container.pinUnlock.setupPin(pin, vk, registry.activeId())
         } finally {
             vk.wipe()
         }
     }
 
     /** بررسی پین فعلی بدون تغییر نشست؛ برای تأیید هنگام تغییر پین. */
-    fun verifyPin(pin: CharArray): Boolean = container.pinUnlock.verifyPin(pin)
+    fun verifyPin(pin: CharArray): Boolean = container.pinUnlock.verifyPin(pin, registry.activeId())
 
     fun disablePin() = container.pinUnlock.disablePin()
 
     /** باز کردن با پین؛ در صورت موفقیت نشست باز می‌شود (مثل رمز اصلی). */
     suspend fun unlockWithPin(pin: CharArray): PinResult = withContext(Dispatchers.Default) {
-        when (val r = container.pinUnlock.unlockWithPin(pin)) {
+        when (val r = container.pinUnlock.unlockWithPin(pin, registry.activeId())) {
             is PinResult.Success -> {
                 session.unlock(r.vaultKey)
                 r

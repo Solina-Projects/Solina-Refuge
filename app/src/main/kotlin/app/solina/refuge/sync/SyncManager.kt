@@ -76,10 +76,12 @@ sealed interface StageJoinResult {
  */
 class SyncManager(
     private val context: Context,
-    private val files: VaultFiles,
+    private val files: () -> VaultFiles,
     private val session: VaultSession,
     private val store: () -> ItemStore,
     private val repository: () -> VaultRepository,
+    /** شناسهٔ خزانهٔ فعال؛ همگام‌سازی و هدرِ پوشهٔ ریموت فقط به همین خزانه مربوط‌اند. */
+    private val vaultId: () -> String = { app.solina.refuge.core.crypto.MultiVaultDesign.DEFAULT_VAULT_ID },
 ) {
     private val prefs = context.getSharedPreferences("sync", Context.MODE_PRIVATE)
     private val secrets = KeystoreSecretStore(context, "sync_secrets")
@@ -174,7 +176,7 @@ class SyncManager(
     suspend fun connect(uri: Uri, kind: String = "storage"): ConnectResult {
         return try {
             val remote = FolderRemote(context, uri)
-            val local = files.readHeader()
+            val local = files().readHeader()
             val remoteBytes = remote.readHeader()
             if (remoteBytes == null) {
                 remote.writeHeader(local.encode())
@@ -207,7 +209,7 @@ class SyncManager(
             try {
                 val remote = WebDavRemote(normalized, username.trim(), password)
                 remote.ensureReady()
-                val local = files.readHeader()
+                val local = files().readHeader()
                 val remoteBytes = remote.readHeader()
                 if (remoteBytes == null) {
                     remote.writeHeader(local.encode())
@@ -234,7 +236,7 @@ class SyncManager(
     /** مرحلهٔ ۱ پیوستن از پوشه: فقط هدر را در حافظه می‌خواند. */
     suspend fun stageJoinFromFolder(uri: Uri, kind: String = "storage"): StageJoinResult {
         DiagLog.log("JOIN", "stage folder selected")
-        if (files.hasVault()) return StageJoinResult.Failed("روی این دستگاه از قبل خزانه وجود دارد.")
+        if (files().hasVault()) return StageJoinResult.Failed("روی این دستگاه از قبل خزانه وجود دارد.")
         return try {
             val remote = FolderRemote(context, uri)
             val bytes = remote.readHeader()
@@ -258,7 +260,7 @@ class SyncManager(
     /** مرحلهٔ ۱ پیوستن از سرور WebDAV (برای انتقال به گوشی جدید). */
     suspend fun stageJoinFromWebDav(rawUrl: String, username: String, password: String): StageJoinResult =
         withContext(Dispatchers.IO) {
-            if (files.hasVault()) return@withContext StageJoinResult.Failed("روی این دستگاه از قبل خزانه وجود دارد.")
+            if (files().hasVault()) return@withContext StageJoinResult.Failed("روی این دستگاه از قبل خزانه وجود دارد.")
             val normalized = try {
                 WebDavProtocol.normalizeHttpsBaseUrl(rawUrl)
             } catch (e: Exception) {
@@ -296,7 +298,7 @@ class SyncManager(
         } catch (e: AuthenticationFailedException) {
             return@withContext false
         }
-        files.writeHeader(staged.header)
+        files().writeHeader(staged.header)
         if (staged.kind == "webdav") {
             persistWebDav(staged.webDavUrl, staged.webDavUser, staged.webDavPass)
         } else {
@@ -312,7 +314,7 @@ class SyncManager(
     suspend fun joinFromFolder(uri: Uri, kind: String = "storage"): ConnectResult {
         return when (val r = stageJoinFromFolder(uri, kind)) {
             is StageJoinResult.Ready -> {
-                files.writeHeader(r.staged.header)
+                files().writeHeader(r.staged.header)
                 r.staged.uri?.let { persistFolder(it, kind) }
                 _status.value = load()
                 ConnectResult.Ok
@@ -358,8 +360,8 @@ class SyncManager(
         val payloads = repository().items.value.map { it.payload }
         val password = AutoBackupKey.backupPasswordChars(vaultKey)
         return try {
-            val header = runCatching { files.readHeader().encode() }.getOrNull()
-            val bytes = Backup.encode(payloads, password, System.currentTimeMillis(), KdfParams.DEFAULT, header)
+            val header = runCatching { files().readHeader().encode() }.getOrNull()
+            val bytes = Backup.encode(payloads, password, System.currentTimeMillis(), KdfParams.DEFAULT, header, vaultId = vaultId())
             val name = BackupRetention.snapshotName(System.currentTimeMillis())
             remote.write(name, bytes)
             val names = runCatching { remote.list() }.getOrDefault(emptyList())
@@ -382,6 +384,14 @@ class SyncManager(
         AutoBackupScheduler.reschedule(context, BackupSchedule.Manual, false)
     }
 
+    /**
+     * لغو پرچم «هدر باید به ریموت فرستاده شود». هنگام تعویض یا ساخت خزانه صدا زده می‌شود
+     * تا هدرِ خزانهٔ قبلی به‌اشتباه به‌جای هدر خزانهٔ تازه‌فعال به ریموت نرود.
+     */
+    fun clearHeaderDirty() {
+        prefs.edit().putBoolean("header_dirty", false).apply()
+    }
+
     private suspend fun writeHeaderToRemote(remote: SyncRemote, bytes: ByteArray) {
         when (remote) {
             is FolderRemote -> remote.writeHeader(bytes)
@@ -394,7 +404,7 @@ class SyncManager(
         prefs.edit().putBoolean("header_dirty", true).apply()
         val remote = activeRemote() ?: return false
         return runCatching {
-            writeHeaderToRemote(remote, files.readHeader().encode())
+            writeHeaderToRemote(remote, files().readHeader().encode())
             prefs.edit().putBoolean("header_dirty", false).apply()
             true
         }.onFailure { e ->
@@ -415,12 +425,12 @@ class SyncManager(
             val repo = repository()
             if (prefs.getBoolean("header_dirty", false)) {
                 runCatching {
-                    writeHeaderToRemote(remote, files.readHeader().encode())
+                    writeHeaderToRemote(remote, files().readHeader().encode())
                     prefs.edit().putBoolean("header_dirty", false).apply()
                 }
             }
             val report = repo.lock.withLock {
-                SyncEngine(store(), remote, epochStore = epochStore).sync(key)
+                SyncEngine(store(), remote, epochStore = epochStore, vaultId = vaultId()).sync(key)
             }
             if (report.changedLocal) repo.load()
             val now = System.currentTimeMillis()

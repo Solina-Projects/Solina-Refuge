@@ -1,5 +1,6 @@
 package app.solina.refuge.core.storage
 
+import app.solina.refuge.core.crypto.MultiVaultDesign
 import app.solina.refuge.core.crypto.SealedItem
 import app.solina.refuge.core.crypto.VaultCrypto
 import app.solina.refuge.core.crypto.wipe
@@ -24,6 +25,8 @@ class VaultRepository(
     private val session: VaultSession,
     private val clock: () -> Long = System::currentTimeMillis,
     private val newId: () -> String = { UUID.randomUUID().toString() },
+    /** شناسهٔ خزانهٔ فعال؛ همهٔ خواندن‌ها/نوشتن‌ها به همین خزانه محدود می‌شوند. */
+    private val vaultId: () -> String = { MultiVaultDesign.DEFAULT_VAULT_ID },
 ) {
     private val _items = MutableStateFlow<List<VaultItem>>(emptyList())
     val items: StateFlow<List<VaultItem>> = _items.asStateFlow()
@@ -49,7 +52,7 @@ class VaultRepository(
     }
 
     suspend fun load() {
-        val rows = store.all().filter { it.deletedAt == null }
+        val rows = store.all(vaultId()).filter { it.deletedAt == null }
         var bad = 0
         val list = ArrayList<VaultItem>(rows.size)
         withKey { key ->
@@ -76,37 +79,37 @@ class VaultRepository(
 
     /** موعدهای متن‌باز را با فهرست فعلی کارها هم‌خوان می‌کند (پس از load یا همگام‌سازی). */
     private suspend fun reconcileTaskDues(list: List<VaultItem>) {
-        val existing = store.allTaskDues().associateBy { it.id }
+        val existing = store.allTaskDues(vaultId()).associateBy { it.id }
         val pending = list.filter { it.payload.kind == ItemKind.Task && !it.payload.done && it.payload.dueAt > 0 }
         for (item in pending) {
             val old = existing[item.id]
             if (old == null || old.dueAt != item.payload.dueAt) {
-                store.saveTaskDue(item.id, item.payload.dueAt, 0L)
+                store.saveTaskDue(item.id, item.payload.dueAt, 0L, vaultId())
             }
         }
         for (meta in existing.values) {
-            if (pending.none { it.id == meta.id }) store.deleteTaskDue(meta.id)
+            if (pending.none { it.id == meta.id }) store.deleteTaskDue(meta.id, vaultId())
         }
     }
 
     /** همهٔ موعدهای متن‌باز (برای یادآور پس‌زمینه؛ فقط شناسه + زمان، بدون محتوا). */
-    suspend fun taskDues(): List<TaskDueMeta> = store.allTaskDues()
+    suspend fun taskDues(): List<TaskDueMeta> = store.allTaskDues(vaultId())
 
     /** ثبت اینکه برای این کار یادآوری فرستاده شد (تا دوباره تکرار نشود). */
     suspend fun markTaskNotified(id: String, at: Long) {
         // عمداً از فهرست حافظه خوانده نمی‌شود: وقتی خزانه قفل است آن فهرست خالی است،
         // ولی یادآور دقیقاً در همان حالت باید بتواند علامت بزند.
-        val due = store.allTaskDues().firstOrNull { it.id == id } ?: return
-        store.saveTaskDue(id, due.dueAt, at)
+        val due = store.allTaskDues(vaultId()).firstOrNull { it.id == id } ?: return
+        store.saveTaskDue(id, due.dueAt, at, vaultId())
     }
 
     /** هم‌خوان‌کردن یک ورودی با جدول موعد: فقط کار ناتمامِ دارای موعد ردیف دارد. */
     private suspend fun syncTaskDue(item: VaultItem) {
         val p = item.payload
         if (p.kind == ItemKind.Task && !p.done && p.dueAt > 0) {
-            store.saveTaskDue(item.id, p.dueAt, 0L)
+            store.saveTaskDue(item.id, p.dueAt, 0L, vaultId())
         } else {
-            store.deleteTaskDue(item.id)
+            store.deleteTaskDue(item.id, vaultId())
         }
     }
 
@@ -130,8 +133,8 @@ class VaultRepository(
         if (next == current.payload) return@withLock current
         val item = VaultItem(id, current.rev + 1, next.copy(editedAt = now))
         withKey { key ->
-            val old = store.get(id) ?: error("item not found")
-            val archived = StoredHistory(id, old.rev, now, old.wrappedItemKey, old.blob)
+            val old = store.get(id, vaultId()) ?: error("item not found")
+            val archived = StoredHistory(id, old.rev, now, old.wrappedItemKey, old.blob, vaultId())
             store.save(seal(key, item, now), archived, MAX_HISTORY)
         }
         syncTaskDue(item)
@@ -193,12 +196,12 @@ class VaultRepository(
     suspend fun delete(id: String) = lock.withLock {
         val current = _items.value.firstOrNull { it.id == id } ?: return@withLock
         val now = clock()
-        val old = store.get(id)
+        val old = store.get(id, vaultId())
         // نسخهٔ فعلی را در تاریخچه بایگانی می‌کنیم تا از سطل زباله قابل بازگردانی باشد؛
         // blob خود tombstone طبق قرارداد همگام‌سازی خالی می‌ماند.
         val archived = old?.let { StoredHistory(id, it.rev, now, it.wrappedItemKey, it.blob) }
-        store.delete(id, now, current.rev + 1, archived)
-        store.deleteTaskDue(id)
+        store.delete(id, now, current.rev + 1, archived, vaultId())
+        store.deleteTaskDue(id, vaultId())
         _items.value = _items.value.filterNot { it.id == id }
         _localChanges.value++
     }
@@ -208,10 +211,10 @@ class VaultRepository(
 
     /** فهرست سطل زباله: tombstoneهایی که آخرین نسخه‌شان رمزگشایی می‌شود. */
     suspend fun trashedItems(): List<TrashedItem> = withKey { key ->
-        val rows = store.all().filter { it.deletedAt != null }
+        val rows = store.all(vaultId()).filter { it.deletedAt != null }
         val list = ArrayList<TrashedItem>(rows.size)
         for (r in rows) {
-            val latest = store.history(r.id).maxByOrNull { it.rev } ?: continue
+            val latest = store.history(r.id, vaultId()).maxByOrNull { it.rev } ?: continue
             try {
                 val plain = VaultCrypto.openItem(key, r.id, latest.rev, ItemPayload.SCHEMA, SealedItem(latest.wrappedItemKey, latest.blob))
                 try {
@@ -228,7 +231,7 @@ class VaultRepository(
 
     /** بازگردانی از سطل زباله: نسخهٔ آخر به‌عنوان ویرایش جدید زنده می‌شود تا همگام‌سازی آن را منتشر کند. */
     suspend fun restoreTrashed(id: String): VaultItem? = lock.withLock {
-        val row = store.get(id) ?: return@withLock null
+        val row = store.get(id, vaultId()) ?: return@withLock null
         if (row.deletedAt == null) return@withLock _items.value.firstOrNull { it.id == id }
         val trashed = trashedItems().firstOrNull { it.id == id } ?: return@withLock null
         val now = clock()
@@ -242,8 +245,8 @@ class VaultRepository(
 
     /** حذف دائمی یک ورودی از سطل زباله (ردیف + تاریخچه). */
     suspend fun purgeTrashed(id: String) = lock.withLock {
-        store.purge(id)
-        store.deleteTaskDue(id)
+        store.purge(id, vaultId())
+        store.deleteTaskDue(id, vaultId())
         _localChanges.value++
     }
 
@@ -253,19 +256,19 @@ class VaultRepository(
      * بعد از این مدت حذف به دستگاه‌های آفلاین دیگر منتشر نمی‌شود، پس نگه‌داشتن ردیف بی‌فایده است.
      */
     suspend fun purgeExpiredTrash(now: Long = clock()): Int = lock.withLock {
-        val expired = store.all().filter {
+        val expired = store.all(vaultId()).filter {
             it.deletedAt != null && now - it.deletedAt > app.solina.refuge.core.sync.SyncEngine.TOMBSTONE_RETENTION_MILLIS
         }
         for (row in expired) {
-            store.purge(row.id)
-            store.deleteTaskDue(row.id)
+            store.purge(row.id, vaultId())
+            store.deleteTaskDue(row.id, vaultId())
         }
         if (expired.isNotEmpty()) _localChanges.value++
         expired.size
     }
 
     suspend fun history(id: String): List<HistoryEntry> = withKey { key ->
-        store.history(id).mapNotNull { h ->
+        store.history(id, vaultId()).mapNotNull { h ->
             try {
                 val plain = VaultCrypto.openItem(key, id, h.rev, ItemPayload.SCHEMA, SealedItem(h.wrappedItemKey, h.blob))
                 try {
@@ -292,7 +295,7 @@ class VaultRepository(
         val plain = item.payload.toBytes()
         try {
             val s = VaultCrypto.sealItem(key, item.id, item.rev, ItemPayload.SCHEMA, plain)
-            return StoredItem(item.id, item.rev, now, null, s.wrappedItemKey, s.blob)
+            return StoredItem(item.id, item.rev, now, null, s.wrappedItemKey, s.blob, vaultId())
         } finally {
             plain.wipe()
         }

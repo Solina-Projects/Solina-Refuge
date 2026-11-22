@@ -1064,6 +1064,19 @@ private fun MainApp(
     var showPinSetup by remember { mutableStateOf(false) }
     var pinSetupBusy by remember { mutableStateOf(false) }
     var pinSetupMessage by remember { mutableStateOf<String?>(null) }
+    // ───── چندخزانه‌ای ─────
+    var vaults by remember { mutableStateOf(auth.vaults()) }
+    fun refreshVaults() { vaults = auth.vaults() }
+    var switchTarget by remember { mutableStateOf<app.solina.refuge.core.security.VaultInfo?>(null) }
+    var switchBusy by remember { mutableStateOf(false) }
+    var switchMessage by remember { mutableStateOf<String?>(null) }
+    var showVaultCreate by remember { mutableStateOf(false) }
+    var vaultCreateBusy by remember { mutableStateOf(false) }
+    var vaultCreateMessage by remember { mutableStateOf<String?>(null) }
+    var pendingVault by remember { mutableStateOf<app.solina.refuge.PendingVault?>(null) }
+    var deleteTarget by remember { mutableStateOf<app.solina.refuge.core.security.VaultInfo?>(null) }
+    var vaultDeleteBusy by remember { mutableStateOf(false) }
+    var vaultDeleteMessage by remember { mutableStateOf<String?>(null) }
 
     val syncStatus by container.sync.status.collectAsState()
     val localRev by repo.localChanges.collectAsState()
@@ -1396,6 +1409,104 @@ private fun MainApp(
         )
     }
 
+    // ───── دیالوگ‌های چندخزانه‌ای ─────
+    switchTarget?.let { target ->
+        app.solina.refuge.ui.screens.VaultSwitchDialog(
+            vault = target,
+            busy = switchBusy,
+            message = switchMessage,
+            onSubmit = { pw ->
+                switchBusy = true
+                switchMessage = null
+                scope.launch {
+                    when (val res = auth.switchVault(target.id, pw)) {
+                        is UnlockResult.Success -> {
+                            switchTarget = null
+                            refreshVaults()
+                            toast = "به خزانهٔ «${target.name}» رفتید"
+                        }
+                        is UnlockResult.WrongPassword -> switchMessage = "رمز این خزانه درست نیست."
+                        is UnlockResult.Wait -> switchMessage = "به‌خاطر تلاش‌های ناموفق، کمی صبر کنید و دوباره امتحان کنید."
+                        else -> switchMessage = "این خزانه باز نشد؛ شاید فایلش خراب است."
+                    }
+                    pw.fill('\u0000')
+                    switchBusy = false
+                }
+            },
+            onDismiss = { switchTarget = null; switchMessage = null },
+        )
+    }
+    if (showVaultCreate) {
+        app.solina.refuge.ui.screens.VaultCreateDialog(
+            busy = vaultCreateBusy,
+            message = vaultCreateMessage,
+            onSubmit = { name, pw ->
+                vaultCreateBusy = true
+                vaultCreateMessage = null
+                scope.launch {
+                    try {
+                        pendingVault = auth.createVault(name, pw)
+                        showVaultCreate = false
+                    } catch (e: IllegalArgumentException) {
+                        vaultCreateMessage = "نام خزانه خالی یا بیش از حد طولانی است."
+                    } catch (e: IllegalStateException) {
+                        vaultCreateMessage = "بیشتر از ${app.solina.refuge.core.crypto.MultiVaultDesign.MAX_VAULTS} خزانه نمی‌شود ساخت."
+                    } catch (e: Exception) {
+                        vaultCreateMessage = "ساخت خزانه ناموفق بود."
+                    } finally {
+                        pw.fill('\u0000')
+                        vaultCreateBusy = false
+                    }
+                }
+            },
+            onDismiss = { showVaultCreate = false; vaultCreateMessage = null },
+        )
+    }
+    pendingVault?.let { pending ->
+        app.solina.refuge.ui.screens.VaultWordsDialog(
+            vaultName = pending.info.name,
+            words = pending.created.recoveryWords,
+            onConfirmed = {
+                scope.launch {
+                    runCatching { auth.commitVault(pending) }.onSuccess {
+                        pendingVault = null
+                        refreshVaults()
+                        toast = "خزانهٔ «${pending.info.name}» ساخته و فعال شد"
+                    }.onFailure {
+                        pendingVault = null
+                        toast = "ثبت خزانه ناموفق بود؛ دوباره امتحان کنید"
+                    }
+                }
+            },
+            onDismiss = { pendingVault = null },
+        )
+    }
+    deleteTarget?.let { target ->
+        app.solina.refuge.ui.screens.VaultDeleteDialog(
+            vault = target,
+            busy = vaultDeleteBusy,
+            message = vaultDeleteMessage,
+            onConfirm = {
+                vaultDeleteBusy = true
+                vaultDeleteMessage = null
+                scope.launch {
+                    when (val res = auth.deleteVault(target.id)) {
+                        is app.solina.refuge.VaultDeleteResult.Ok -> {
+                            deleteTarget = null
+                            refreshVaults()
+                            toast = "خزانهٔ «${target.name}» حذف شد"
+                        }
+                        is app.solina.refuge.VaultDeleteResult.LastVault ->
+                            vaultDeleteMessage = "نمی‌شود آخرین خزانه را حذف کرد؛ حداقل یک خزانه باید بماند."
+                        is app.solina.refuge.VaultDeleteResult.NotFound -> deleteTarget = null
+                    }
+                    vaultDeleteBusy = false
+                }
+            },
+            onDismiss = { deleteTarget = null; vaultDeleteMessage = null },
+        )
+    }
+
     val inSub = generator || editing || detailId != null || scanning || dataStep != null || showTrash ||
         showExternalAccounts || showWebDavConnect || showChangePassword || showPinSetup
 
@@ -1580,7 +1691,7 @@ private fun MainApp(
                                 try {
                                     val payloads = items.map { it.payload }
                                     val vh = runCatching { container.files.readHeader().encode() }.getOrNull()
-                                    val bytes = withContext(Dispatchers.Default) { Backup.encode(payloads, pw, System.currentTimeMillis(), KdfCalibrator.pickOnDevice(), vh) }
+                                    val bytes = withContext(Dispatchers.Default) { Backup.encode(payloads, pw, System.currentTimeMillis(), KdfCalibrator.pickOnDevice(), vh, vaultId = auth.activeVaultId(), vaultName = auth.activeVault()?.name) }
                                     pw.fill('\u0000')
                                     pendingExport = bytes
                                     val stamp = java.text.SimpleDateFormat("yyyyMMdd-HHmm", java.util.Locale.US).format(java.util.Date())
@@ -1599,7 +1710,7 @@ private fun MainApp(
                                 try {
                                     val payloads = items.map { it.payload }
                                     val bytes = withContext(Dispatchers.Default) {
-                                        Backup.encodeAuthenticatorOnly(payloads, pw, System.currentTimeMillis(), KdfCalibrator.pickOnDevice(), runCatching { container.files.readHeader().encode() }.getOrNull())
+                                        Backup.encodeAuthenticatorOnly(payloads, pw, System.currentTimeMillis(), KdfCalibrator.pickOnDevice(), runCatching { container.files.readHeader().encode() }.getOrNull(), vaultId = auth.activeVaultId(), vaultName = auth.activeVault()?.name)
                                     }
                                     pw.fill('\u0000')
                                     pendingExport = bytes
@@ -1983,6 +2094,11 @@ private fun MainApp(
                             density = listDensity,
                             onSetDensity = { container.securityPrefs.setListDensity(it) },
                             onLock = { container.session.lock() },
+                            vaults = vaults,
+                            activeVaultId = auth.activeVaultId(),
+                            onSwitchVault = { switchMessage = null; switchTarget = it },
+                            onCreateVault = { vaultCreateMessage = null; showVaultCreate = true },
+                            onDeleteVault = { vaultDeleteMessage = null; deleteTarget = it },
                         )
                     }
                 }

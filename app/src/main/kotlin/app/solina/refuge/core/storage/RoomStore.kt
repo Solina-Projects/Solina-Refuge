@@ -23,6 +23,8 @@ class ItemRow(
     val deletedAt: Long?,
     @ColumnInfo(typeAffinity = ColumnInfo.BLOB) val wrappedItemKey: ByteArray,
     @ColumnInfo(typeAffinity = ColumnInfo.BLOB) val blob: ByteArray,
+    /** خزانهٔ مالک ردیف؛ مهاجرت ۲←۳ همهٔ ردیف‌های قدیمی را به خزانهٔ پیش‌فرض می‌دهد. */
+    val vaultId: String = app.solina.refuge.core.crypto.MultiVaultDesign.DEFAULT_VAULT_ID,
 )
 
 @Entity(tableName = "history", indices = [Index("itemId")])
@@ -33,6 +35,7 @@ class HistoryRow(
     val savedAt: Long,
     @ColumnInfo(typeAffinity = ColumnInfo.BLOB) val wrappedItemKey: ByteArray,
     @ColumnInfo(typeAffinity = ColumnInfo.BLOB) val blob: ByteArray,
+    val vaultId: String = app.solina.refuge.core.crypto.MultiVaultDesign.DEFAULT_VAULT_ID,
 )
 
 /**
@@ -44,36 +47,37 @@ class TaskDueRow(
     @PrimaryKey val id: String,
     val dueAt: Long,
     val notifiedAt: Long,
+    val vaultId: String = app.solina.refuge.core.crypto.MultiVaultDesign.DEFAULT_VAULT_ID,
 )
 
 @Dao
 interface ItemDao {
-    @Query("SELECT * FROM items")
-    suspend fun all(): List<ItemRow>
+    @Query("SELECT * FROM items WHERE vaultId = :vaultId")
+    suspend fun all(vaultId: String): List<ItemRow>
 
-    @Query("SELECT * FROM items WHERE id = :id")
-    suspend fun get(id: String): ItemRow?
+    @Query("SELECT * FROM items WHERE id = :id AND vaultId = :vaultId")
+    suspend fun get(id: String, vaultId: String): ItemRow?
 
     @Upsert
     suspend fun upsert(row: ItemRow)
 
-    @Query("INSERT INTO history (itemId, rev, savedAt, wrappedItemKey, blob) VALUES (:itemId, :rev, :savedAt, :key, :blob)")
-    suspend fun addHistory(itemId: String, rev: Long, savedAt: Long, key: ByteArray, blob: ByteArray)
+    @Query("INSERT INTO history (itemId, rev, savedAt, wrappedItemKey, blob, vaultId) VALUES (:itemId, :rev, :savedAt, :key, :blob, :vaultId)")
+    suspend fun addHistory(itemId: String, rev: Long, savedAt: Long, key: ByteArray, blob: ByteArray, vaultId: String)
 
     @Query(
-        "DELETE FROM history WHERE itemId = :itemId AND rowId NOT IN " +
-            "(SELECT rowId FROM history WHERE itemId = :itemId ORDER BY rev DESC, rowId DESC LIMIT :keep)",
+        "DELETE FROM history WHERE itemId = :itemId AND vaultId = :vaultId AND rowId NOT IN " +
+            "(SELECT rowId FROM history WHERE itemId = :itemId AND vaultId = :vaultId ORDER BY rev DESC, rowId DESC LIMIT :keep)",
     )
-    suspend fun trimHistory(itemId: String, keep: Int)
+    suspend fun trimHistory(itemId: String, keep: Int, vaultId: String)
 
-    @Query("DELETE FROM items WHERE id = :id")
-    suspend fun deleteItem(id: String)
+    @Query("DELETE FROM items WHERE id = :id AND vaultId = :vaultId")
+    suspend fun deleteItem(id: String, vaultId: String)
 
-    @Query("DELETE FROM history WHERE itemId = :itemId")
-    suspend fun clearHistory(itemId: String)
+    @Query("DELETE FROM history WHERE itemId = :itemId AND vaultId = :vaultId")
+    suspend fun clearHistory(itemId: String, vaultId: String)
 
-    @Query("SELECT * FROM history WHERE itemId = :itemId ORDER BY rev DESC")
-    suspend fun history(itemId: String): List<HistoryRow>
+    @Query("SELECT * FROM history WHERE itemId = :itemId AND vaultId = :vaultId ORDER BY rev DESC")
+    suspend fun history(itemId: String, vaultId: String): List<HistoryRow>
 
     @Query("DELETE FROM items")
     suspend fun wipeItems()
@@ -81,20 +85,29 @@ interface ItemDao {
     @Query("DELETE FROM history")
     suspend fun wipeHistory()
 
+    @Query("DELETE FROM items WHERE vaultId = :vaultId")
+    suspend fun wipeVaultItems(vaultId: String)
+
+    @Query("DELETE FROM history WHERE vaultId = :vaultId")
+    suspend fun wipeVaultHistory(vaultId: String)
+
+    @Query("DELETE FROM task_due WHERE vaultId = :vaultId")
+    suspend fun wipeVaultTaskDues(vaultId: String)
+
     @Upsert
     suspend fun upsertTaskDue(row: TaskDueRow)
 
-    @Query("DELETE FROM task_due WHERE id = :id")
-    suspend fun deleteTaskDue(id: String)
+    @Query("DELETE FROM task_due WHERE id = :id AND vaultId = :vaultId")
+    suspend fun deleteTaskDue(id: String, vaultId: String)
 
-    @Query("SELECT * FROM task_due")
-    suspend fun allTaskDues(): List<TaskDueRow>
+    @Query("SELECT * FROM task_due WHERE vaultId = :vaultId")
+    suspend fun allTaskDues(vaultId: String): List<TaskDueRow>
 
     @Query("DELETE FROM task_due")
     suspend fun wipeTaskDues()
 }
 
-@Database(entities = [ItemRow::class, HistoryRow::class, TaskDueRow::class], version = 2, exportSchema = false)
+@Database(entities = [ItemRow::class, HistoryRow::class, TaskDueRow::class], version = 3, exportSchema = false)
 abstract class RefugeDatabase : RoomDatabase() {
     abstract fun dao(): ItemDao
 
@@ -106,9 +119,22 @@ abstract class RefugeDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * مهاجرت ۲ ← ۳ (چندخزانه‌ای): ستون `vaultId` به هر سه جدول اضافه می‌شود؛
+         * همهٔ ردیف‌های قدیمی به خزانهٔ پیش‌فرض (`default`) تعلق می‌گیرند — هیچ داده‌ای
+         * جابه‌جا یا دوباره رمز نمی‌شود.
+         */
+        val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `items` ADD COLUMN `vaultId` TEXT NOT NULL DEFAULT 'default'")
+                db.execSQL("ALTER TABLE `history` ADD COLUMN `vaultId` TEXT NOT NULL DEFAULT 'default'")
+                db.execSQL("ALTER TABLE `task_due` ADD COLUMN `vaultId` TEXT NOT NULL DEFAULT 'default'")
+            }
+        }
+
         fun open(context: Context): RefugeDatabase =
             Room.databaseBuilder(context.applicationContext, RefugeDatabase::class.java, "refuge.db")
-                .addMigrations(MIGRATION_1_2)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
                 .addCallback(object : Callback() {
                     override fun onOpen(db: SupportSQLiteDatabase) {
                         // بازنویسی صفحات حذف‌شده با صفر برای کاهش باقی‌ماندهٔ متادیتا/بلاب در دیسک
@@ -123,44 +149,44 @@ abstract class RefugeDatabase : RoomDatabase() {
 class RoomItemStore(private val db: RefugeDatabase) : ItemStore {
     private val dao = db.dao()
 
-    override suspend fun all() = dao.all().map { it.toStored() }
-    override suspend fun get(id: String) = dao.get(id)?.toStored()
+    override suspend fun all(vaultId: String) = dao.all(vaultId).map { it.toStored() }
+    override suspend fun get(id: String, vaultId: String) = dao.get(id, vaultId)?.toStored()
 
     override suspend fun save(item: StoredItem, archivedPrevious: StoredHistory?, keepHistory: Int) {
         db.withTransaction {
             if (archivedPrevious != null) {
                 dao.addHistory(
                     archivedPrevious.itemId, archivedPrevious.rev, archivedPrevious.savedAt,
-                    archivedPrevious.wrappedItemKey, archivedPrevious.blob,
+                    archivedPrevious.wrappedItemKey, archivedPrevious.blob, archivedPrevious.vaultId,
                 )
-                dao.trimHistory(item.id, keepHistory)
+                dao.trimHistory(item.id, keepHistory, item.vaultId)
             }
-            dao.upsert(ItemRow(item.id, item.rev, item.updatedAt, item.deletedAt, item.wrappedItemKey, item.blob))
+            dao.upsert(ItemRow(item.id, item.rev, item.updatedAt, item.deletedAt, item.wrappedItemKey, item.blob, item.vaultId))
         }
     }
 
-    override suspend fun delete(id: String, deletedAt: Long, newRev: Long, archivedPrevious: StoredHistory?) {
+    override suspend fun delete(id: String, deletedAt: Long, newRev: Long, archivedPrevious: StoredHistory?, vaultId: String) {
         db.withTransaction {
             if (archivedPrevious != null) {
                 dao.addHistory(
                     archivedPrevious.itemId, archivedPrevious.rev, archivedPrevious.savedAt,
-                    archivedPrevious.wrappedItemKey, archivedPrevious.blob,
+                    archivedPrevious.wrappedItemKey, archivedPrevious.blob, archivedPrevious.vaultId,
                 )
-                dao.trimHistory(id, VaultRepository.MAX_HISTORY)
+                dao.trimHistory(id, VaultRepository.MAX_HISTORY, vaultId)
             }
-            dao.upsert(ItemRow(id, newRev, deletedAt, deletedAt, ByteArray(0), ByteArray(0)))
+            dao.upsert(ItemRow(id, newRev, deletedAt, deletedAt, ByteArray(0), ByteArray(0), vaultId))
         }
     }
 
-    override suspend fun purge(id: String) {
+    override suspend fun purge(id: String, vaultId: String) {
         db.withTransaction {
-            dao.clearHistory(id)
-            dao.deleteItem(id)
+            dao.clearHistory(id, vaultId)
+            dao.deleteItem(id, vaultId)
         }
     }
 
-    override suspend fun history(itemId: String) =
-        dao.history(itemId).map { StoredHistory(it.itemId, it.rev, it.savedAt, it.wrappedItemKey, it.blob) }
+    override suspend fun history(itemId: String, vaultId: String) =
+        dao.history(itemId, vaultId).map { StoredHistory(it.itemId, it.rev, it.savedAt, it.wrappedItemKey, it.blob, it.vaultId) }
 
     override suspend fun wipeAll() {
         db.withTransaction { dao.wipeItems(); dao.wipeHistory(); dao.wipeTaskDues() }
@@ -173,16 +199,20 @@ class RoomItemStore(private val db: RefugeDatabase) : ItemStore {
         }
     }
 
-    override suspend fun saveTaskDue(id: String, dueAt: Long, notifiedAt: Long) {
-        dao.upsertTaskDue(TaskDueRow(id, dueAt, notifiedAt))
+    override suspend fun wipeVault(vaultId: String) {
+        db.withTransaction { dao.wipeVaultItems(vaultId); dao.wipeVaultHistory(vaultId); dao.wipeVaultTaskDues(vaultId) }
     }
 
-    override suspend fun deleteTaskDue(id: String) {
-        dao.deleteTaskDue(id)
+    override suspend fun saveTaskDue(id: String, dueAt: Long, notifiedAt: Long, vaultId: String) {
+        dao.upsertTaskDue(TaskDueRow(id, dueAt, notifiedAt, vaultId))
     }
 
-    override suspend fun allTaskDues(): List<TaskDueMeta> =
-        dao.allTaskDues().map { TaskDueMeta(it.id, it.dueAt, it.notifiedAt) }
+    override suspend fun deleteTaskDue(id: String, vaultId: String) {
+        dao.deleteTaskDue(id, vaultId)
+    }
 
-    private fun ItemRow.toStored() = StoredItem(id, rev, updatedAt, deletedAt, wrappedItemKey, blob)
+    override suspend fun allTaskDues(vaultId: String): List<TaskDueMeta> =
+        dao.allTaskDues(vaultId).map { TaskDueMeta(it.id, it.dueAt, it.notifiedAt) }
+
+    private fun ItemRow.toStored() = StoredItem(id, rev, updatedAt, deletedAt, wrappedItemKey, blob, vaultId)
 }
