@@ -51,6 +51,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
 import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -67,6 +68,9 @@ import app.solina.refuge.core.security.VaultSession
 import app.solina.refuge.core.sync.BackupRetention
 import app.solina.refuge.autofill.DomainMatcher
 import app.solina.refuge.core.backup.AutoBackupKey
+import app.solina.refuge.core.backup.BackupAttachmentData
+import app.solina.refuge.core.backup.DecodedBackup
+import app.solina.refuge.core.crypto.AttachmentCrypto
 import app.solina.refuge.core.passkey.PasskeyGate
 import app.solina.refuge.core.passkey.PasskeyResult
 import app.solina.refuge.core.security.KdfCalibrator
@@ -82,6 +86,7 @@ import app.solina.refuge.core.storage.HistoryEntry
 import app.solina.refuge.core.storage.ItemPayload
 import app.solina.refuge.core.storage.SecurityAnalyzer
 import app.solina.refuge.core.storage.VaultItem
+import app.solina.refuge.core.storage.VaultRepository
 import app.solina.refuge.sync.ConnectResult
 import app.solina.refuge.sync.StageJoinResult
 import app.solina.refuge.sync.StagedJoin
@@ -151,6 +156,7 @@ class MainActivity : FragmentActivity() {
         const val RC_CAMERA = 1007
         const val RC_GALLERY_IMAGE = 1008
         const val RC_WELCOME_RESTORE_FILE = 1009
+        const val RC_ATTACHMENT_FILE = 1010
     }
 
     private val container get() = (application as RefugeApplication).container
@@ -234,6 +240,8 @@ class MainActivity : FragmentActivity() {
         enableEdgeToEdge()
         captureOAuthIntent(intent)
         captureNotesLink(intent)
+        // فایل‌های رمزگشایی‌شدهٔ پیوست از اجرای قبل در کش خصوصی برنامه نمانند.
+        runCatching { java.io.File(cacheDir, "attachments").deleteRecursively() }
         val auth = AuthController(container)
         val viewModel = ViewModelProvider(this)[RefugeViewModel::class.java]
         DiagLog.log("ACT", "onCreate")
@@ -494,6 +502,17 @@ private fun Root(
     var welcomeRestoreBusy by remember { mutableStateOf(false) }
     var welcomeRestoreMsg by remember { mutableStateOf<String?>(null) }
     var pendingRestoredPayloads by remember { mutableStateOf<List<ItemPayload>>(emptyList()) }
+    /** پیوست‌های بکاپ v2 که همراه pendingRestoredPayloads مرحله‌بندی شده‌اند؛ همیشه با هم خالی می‌شوند. */
+    var pendingRestoredAttachments by remember { mutableStateOf<List<BackupAttachmentData>>(emptyList()) }
+
+    /** ورود ورودی‌ها + پیوست‌های مرحله‌بندی‌شدهٔ بکاپ (v1/v2) و خالی‌کردن مرحله‌بندی. */
+    suspend fun importPendingRestored() {
+        val toImport = pendingRestoredPayloads
+        val atts = pendingRestoredAttachments
+        pendingRestoredPayloads = emptyList()
+        pendingRestoredAttachments = emptyList()
+        runCatching { container.repository.importBackup(DecodedBackup(toImport, null, atts)) }
+    }
     var stagedBackupHeader by remember { mutableStateOf<VaultHeader?>(null) }
     var stagedBackupRecoveryMode by remember { mutableStateOf(false) }
     var legacyBackupPw by remember { mutableStateOf<CharArray?>(null) }
@@ -651,12 +670,10 @@ private fun Root(
                             }
                             masterPw.fill('\u0000')
                             if (vk != null) {
-                                val toImport = pendingRestoredPayloads
                                 auth.restoreExistingVault(header, vk)
                                 stagedBackupHeader = null
-                                pendingRestoredPayloads = emptyList()
                                 hasVault = true
-                                runCatching { container.repository.importItems(toImport) }
+                                importPendingRestored()
                                 busy = false
                             } else {
                                 busy = false
@@ -670,6 +687,7 @@ private fun Root(
                         stagedBackupHeader = null
                         stagedBackupRecoveryMode = false
                         pendingRestoredPayloads = emptyList()
+                        pendingRestoredAttachments = emptyList()
                         message = null
                     },
                 )
@@ -692,14 +710,12 @@ private fun Root(
                             }
                             val vk = res.getOrNull()
                             if (vk != null) {
-                                val toImport = pendingRestoredPayloads
                                 auth.restoreExistingVault(header, vk)
                                 stagedBackupHeader = null
                                 stagedBackupRecoveryMode = false
-                                pendingRestoredPayloads = emptyList()
                                 mustReset = true
                                 hasVault = true
-                                runCatching { container.repository.importItems(toImport) }
+                                importPendingRestored()
                                 busy = false
                             } else {
                                 busy = false
@@ -721,6 +737,7 @@ private fun Root(
                 legacyBackupPw?.fill('\u0000')
                 legacyBackupPw = null
                 pendingRestoredPayloads = emptyList()
+                pendingRestoredAttachments = emptyList()
                 legacyBackupMsg = null
             }
             LegacyBackupRestoreScreen(
@@ -735,12 +752,10 @@ private fun Root(
                         val res = auth.createWithExistingRecovery(usePw, phrase)
                         usePw.fill('\u0000')
                         if (res == UnlockResult.Success) {
-                            val toImport = pendingRestoredPayloads
                             legacyBackupPw?.fill('\u0000')
                             legacyBackupPw = null
-                            pendingRestoredPayloads = emptyList()
                             hasVault = true
-                            runCatching { container.repository.importItems(toImport) }
+                            importPendingRestored()
                             legacyBackupBusy = false
                         } else {
                             legacyBackupBusy = false
@@ -765,6 +780,7 @@ private fun Root(
                     legacyBackupPw?.fill('\u0000')
                     legacyBackupPw = null
                     pendingRestoredPayloads = emptyList()
+                    pendingRestoredAttachments = emptyList()
                     legacyBackupMsg = null
                 },
             )
@@ -803,10 +819,11 @@ private fun Root(
                                 if (directVk != null) {
                                     auth.restoreExistingVault(embeddedHeader, directVk)
                                     hasVault = true
-                                    runCatching { container.repository.importItems(decoded.items) }
+                                    runCatching { container.repository.importBackup(decoded) }
                                 } else {
                                     // رمز بکاپ با رمز اصلی فرق داشته: فقط رمز اصلی قبلی (یا ۲۴ کلمهٔ قبلی) را می‌پرسیم، بدون ساخت رمز/کلمات جدید!
                                     pendingRestoredPayloads = decoded.items
+                                    pendingRestoredAttachments = decoded.attachments
                                     stagedBackupHeader = embeddedHeader
                                     stagedBackupRecoveryMode = false
                                     message = null
@@ -814,6 +831,7 @@ private fun Root(
                             } else {
                                 // فایل بکاپ قدیمی بدون هدر خزانه: اجازه می‌دهیم ۲۴ کلمهٔ قبلی و همان رمز را حفظ کند (بدون اجبار به ساخت جدید)
                                 pendingRestoredPayloads = decoded.items
+                                pendingRestoredAttachments = decoded.attachments
                                 legacyBackupPw = pw.copyOf()
                                 legacyBackupMsg = null
                             }
@@ -872,7 +890,7 @@ private fun Root(
                 WelcomeScreen(
                     message = joinMessage,
                     busy = welcomeRestoreBusy,
-                    onCreate = { joinMessage = null; pendingRestoredPayloads = emptyList(); stage = Stage.CreatePassword },
+                    onCreate = { joinMessage = null; pendingRestoredPayloads = emptyList(); pendingRestoredAttachments = emptyList(); stage = Stage.CreatePassword },
                     onRestoreBackupFile = { launchWelcomeRestoreFile() },
                     onDiagnostics = onDiagnostics,
                     onJoinCloud = { joinMessage = null; DiagLog.log("JOIN", "cloud button tapped"); showJoinCloud = true },
@@ -904,14 +922,8 @@ private fun Root(
                     created?.let { vault ->
                         auth.commit(vault)
                         created = null
-                        val toRestore = pendingRestoredPayloads
-                        pendingRestoredPayloads = emptyList()
                         hasVault = true
-                        if (toRestore.isNotEmpty()) {
-                            scope.launch {
-                                runCatching { container.repository.importItems(toRestore) }
-                            }
-                        }
+                        scope.launch { importPendingRestored() }
                         offerBiometric = auth.biometricAvailable(activity)
                     }
                 },
@@ -1302,6 +1314,7 @@ private fun MainApp(
     var prefill by remember { mutableStateOf<ItemPayload?>(null) }
     var saving by remember { mutableStateOf(false) }
     var history by remember { mutableStateOf<List<HistoryEntry>>(emptyList()) }
+    var detailAttachments by remember { mutableStateOf<List<VaultRepository.AttachmentMeta>>(emptyList()) }
     // ── یادداشت و کارها (فاز ۳) ──
     var noteHistory by remember { mutableStateOf<List<HistoryEntry>>(emptyList()) }
     var newNoteSignal by remember { mutableStateOf(0) }
@@ -1368,6 +1381,73 @@ private fun MainApp(
     val detailItem = items.firstOrNull { it.id == detailId }
     LaunchedEffect(detailId, detailItem?.rev) {
         history = if (detailId != null && detailItem != null) runCatching { repo.history(detailId!!) }.getOrDefault(emptyList()) else emptyList()
+        detailAttachments = if (detailId != null) runCatching { repo.attachments(detailId!!) }.getOrDefault(emptyList()) else emptyList()
+    }
+
+    /** انتخاب فایل برای پیوست به ورودی باز (حداکثر ۱۰ مگابایت؛ با کلید خزانه بسته می‌شود). */
+    fun launchAttachmentPicker(itemId: String) {
+        activity.launchForResult(
+            buildOpenAnyFileIntent(activity),
+            MainActivity.RC_ATTACHMENT_FILE,
+            handler = { resultCode, data ->
+                val uri = if (resultCode == Activity.RESULT_OK) data?.data else null
+                if (uri != null) {
+                    scope.launch {
+                        var bytes: ByteArray? = null
+                        try {
+                            val name = queryDisplayName(resolver, uri)
+                            val mime = runCatching { resolver.getType(uri) }.getOrNull().orEmpty()
+                            bytes = withContext(Dispatchers.IO) {
+                                readLimitedUri(resolver, uri, AttachmentCrypto.MAX_ATTACHMENT_BYTES)
+                            }
+                            if (bytes == null) {
+                                toast = "فایل خوانده نشد یا بیش از ۱۰ مگابایت است."
+                            } else {
+                                repo.addAttachment(itemId, name, mime, bytes)
+                                detailAttachments = runCatching { repo.attachments(itemId) }.getOrDefault(emptyList())
+                                toast = "پیوست اضافه شد"
+                            }
+                        } catch (e: IllegalArgumentException) {
+                            toast = "پیوست اضافه نشد."
+                        } catch (e: Exception) {
+                            DiagLog.logError("ATTACH", e, "launchAttachmentPicker")
+                            toast = "افزودن پیوست ناموفق بود."
+                        } finally {
+                            bytes?.fill(0)
+                        }
+                    }
+                }
+            },
+            onFail = { toast = "انتخاب‌گر فایل در دسترس نیست." },
+        )
+    }
+
+    /** رمزگشایی پیوست در کش خصوصی برنامه و باز کردن آن با برنامهٔ مناسب. */
+    fun openAttachmentFile(meta: VaultRepository.AttachmentMeta) {
+        scope.launch {
+            var plain: ByteArray? = null
+            try {
+                plain = withContext(Dispatchers.Default) { repo.openAttachment(meta.fileId) }
+                val dir = java.io.File(activity.cacheDir, "attachments").apply { mkdirs() }
+                val safeName = meta.name.replace(Regex("[^A-Za-z0-9._-]"), "_").takeLast(100).ifBlank { "file" }
+                val file = java.io.File(dir, "${meta.fileId}-$safeName")
+                withContext(Dispatchers.IO) { file.writeBytes(plain!!) }
+                val uri = FileProvider.getUriForFile(activity, "${activity.packageName}.fileprovider", file)
+                val intent = Intent(Intent.ACTION_VIEW)
+                    .setDataAndType(uri, meta.mime.ifBlank { "application/octet-stream" })
+                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                try {
+                    activity.startActivity(Intent.createChooser(intent, "باز کردن پیوست"))
+                } catch (e: android.content.ActivityNotFoundException) {
+                    toast = "برنامه‌ای برای باز کردن این فایل نیست."
+                }
+            } catch (e: Exception) {
+                DiagLog.logError("ATTACH", e, "openAttachmentFile")
+                toast = "باز کردن پیوست ناموفق بود."
+            } finally {
+                plain?.fill(0)
+            }
+        }
     }
 
     fun onScanned(text: String) {
@@ -1580,7 +1660,13 @@ private fun MainApp(
                                 try {
                                     val payloads = items.map { it.payload }
                                     val vh = runCatching { container.files.readHeader().encode() }.getOrNull()
-                                    val bytes = withContext(Dispatchers.Default) { Backup.encode(payloads, pw, System.currentTimeMillis(), KdfCalibrator.pickOnDevice(), vh) }
+                                    // پیوست‌ها: اگر هست، بکاپ v2 ساخته می‌شود؛ اگر نیست، دقیقاً v1 مثل قبل.
+                                    val atts = withContext(Dispatchers.Default) { repo.exportAttachmentsForBackup(items.map { it.id }) }
+                                    val bytes = try {
+                                        withContext(Dispatchers.Default) { Backup.encode(payloads, pw, System.currentTimeMillis(), KdfCalibrator.pickOnDevice(), vh, atts) }
+                                    } finally {
+                                        atts.forEach { it.data.fill(0) }
+                                    }
                                     pw.fill('\u0000')
                                     pendingExport = bytes
                                     val stamp = java.text.SimpleDateFormat("yyyyMMdd-HHmm", java.util.Locale.US).format(java.util.Date())
@@ -1624,28 +1710,29 @@ private fun MainApp(
                                 dataMessage = null
                                 scope.launch {
                                     try {
-                                        val payloads = withContext(Dispatchers.Default) {
+                                        val decoded = withContext(Dispatchers.Default) {
                                             // اسنپ‌شات خودکار: رمز آن از کلید خزانه مشتق می‌شود؛
                                             // وقتی خزانه باز است اول با همان رمز امتحان می‌شود و
                                             // اگر نشد، رمز واردشدهٔ کاربر (بکاپ دستی) امتحان می‌شود.
                                             val autoPw = autoSnapshotPassword(container.session, pendingRestoreFileName)
                                             try {
                                                 if (autoPw != null) {
-                                                    runCatching { Backup.decode(bytes, autoPw) }
-                                                        .getOrElse { Backup.decode(bytes, pw) }
+                                                    runCatching { Backup.decodeFull(bytes, autoPw) }
+                                                        .getOrElse { Backup.decodeFull(bytes, pw) }
                                                 } else {
-                                                    Backup.decode(bytes, pw)
+                                                    Backup.decodeFull(bytes, pw)
                                                 }
                                             } finally {
                                                 autoPw?.fill('\u0000')
                                             }
                                         }
-                                        val stats = repo.importItems(payloads)
+                                        val stats = repo.importBackup(decoded)
                                         pendingRestore = null
                                         pendingRestoreInfo = null
                                         pendingRestoreFileName = null
                                         dataStep = DataStep.Menu
-                                        toast = "${stats.added.fa()} ورودی بازیابی شد" + if (stats.skipped > 0) " (${stats.skipped.fa()} تکراری)" else ""
+                                        toast = "${stats.added.fa()} ورودی بازیابی شد" + if (stats.skipped > 0) " (${stats.skipped.fa()} تکراری)" else "" +
+                                            if (stats.attachmentsAdded > 0) " و ${stats.attachmentsAdded.fa()} پیوست" else ""
                                     } catch (e: AuthenticationFailedException) {
                                         dataMessage = "رمز بکاپ درست نیست یا فایل دست‌کاری شده است."
                                     } catch (e: BackupFormatException) {
@@ -1786,6 +1873,17 @@ private fun MainApp(
                                     is PasskeyResult.Failed -> toast = "ورود با Passkey ناموفق بود"
                                     is PasskeyResult.Created -> Unit
                                 }
+                            }
+                        },
+                        attachments = detailAttachments,
+                        onAddAttachment = { detailId?.let { launchAttachmentPicker(it) } },
+                        onOpenAttachment = { meta -> openAttachmentFile(meta) },
+                        onRemoveAttachment = { meta ->
+                            val id = detailId ?: return@DetailScreen
+                            scope.launch {
+                                runCatching { repo.removeAttachment(meta.fileId) }
+                                detailAttachments = runCatching { repo.attachments(id) }.getOrDefault(emptyList())
+                                toast = "پیوست حذف شد"
                             }
                         },
                     )

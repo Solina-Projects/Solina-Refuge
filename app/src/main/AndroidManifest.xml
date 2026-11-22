@@ -69,6 +69,18 @@
             </intent-filter>
         </activity>
 
+        <!-- باز کردن پیوست رمزگشایی‌شده با برنامهٔ مناسب (فاز ۴): فقط کش خصوصی برنامه،
+             بدون دسترسی دائمی؛ فایل در شروع اجرای بعد پاک می‌شود. -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+
         <!-- Autofill: فقط وقتی کاربر Refuge را به‌عنوان سرویس Autofill انتخاب کند فعال می‌شود. -->
         <service
             android:name=".autofill.RefugeAutofillService"

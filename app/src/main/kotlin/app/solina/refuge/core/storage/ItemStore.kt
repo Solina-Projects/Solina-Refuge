@@ -27,6 +27,23 @@ class StoredHistory(
     val blob: ByteArray,
 )
 
+/**
+ * یک پیوست رمزگذاری‌شدهٔ ذخیره‌شده (فاز ۴، اتصال کامل).
+ * فقط fileId، itemId، نام، نوع، اندازه و زمان افزودن آشکارند؛ محتوای فایل
+ * ([sealedData]) و کلید آن ([wrappedDek]) با [app.solina.refuge.core.crypto.AttachmentCrypto]
+ * و کلید خزانه بسته شده‌اند و بدون آن باز نمی‌شوند.
+ */
+class StoredAttachment(
+    val fileId: String,
+    val itemId: String,
+    val name: String,
+    val mime: String,
+    val size: Long,
+    val addedAt: Long,
+    val wrappedDek: ByteArray,
+    val sealedData: ByteArray,
+)
+
 /** لایهٔ ذخیره؛ هیچ چیز دربارهٔ رمزنگاری نمی‌داند. */
 interface ItemStore {
     suspend fun all(): List<StoredItem>
@@ -45,6 +62,23 @@ interface ItemStore {
 
     suspend fun history(itemId: String): List<StoredHistory>
     suspend fun wipeAll()
+
+    // ── پیوست‌های رمزگذاری‌شده (فاز ۴) ──
+    // پیاده‌سازی پیش‌فرض خالی است تا ذخیره‌های آزمایشی قدیمی نشکنند؛ RoomItemStore آن را بازنویسی می‌کند.
+    /** همهٔ پیوست‌های یک ورودی، به ترتیب زمان افزودن. */
+    suspend fun attachments(itemId: String): List<StoredAttachment> = emptyList()
+    /** یک پیوست با شناسهٔ فایل، یا null اگر نباشد. */
+    suspend fun attachment(fileId: String): StoredAttachment? = null
+    /** همهٔ پیوست‌های همهٔ ورودی‌ها (برای بکاپ نسخهٔ ۲). */
+    suspend fun allAttachments(): List<StoredAttachment> = emptyList()
+    /** درج/به‌روزرسانی یک پیوست (fileId کلید اصلی است). */
+    suspend fun saveAttachment(attachment: StoredAttachment) {}
+    /** حذف یک پیوست با شناسهٔ فایل. */
+    suspend fun deleteAttachment(fileId: String) {}
+    /** حذف همهٔ پیوست‌های یک ورودی (هنگام حذف دائمی ورودی). */
+    suspend fun deleteAttachmentsForItem(itemId: String) {}
+    /** حذف همهٔ پیوست‌ها (هنگام پاک‌سازی کامل خزانه). */
+    suspend fun wipeAttachments() {}
 
     // ── فرادادهٔ موعد کارها (فاز ۳) ──
     // پیاده‌سازی پیش‌فرض خالی است تا ذخیره‌های آزمایشی قدیمی نشکنند؛ RoomItemStore آن را بازنویسی می‌کند.

@@ -51,10 +51,12 @@ import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.solina.refuge.core.Base32
+import app.solina.refuge.core.backup.Backup
 import app.solina.refuge.core.OtpType
 import app.solina.refuge.core.PasswordGenerator
 import app.solina.refuge.core.Totp
@@ -1054,6 +1056,10 @@ fun DetailScreen(
     passkeySupported: Boolean = false,
     onCreatePasskey: () -> Unit = {},
     onSignInWithPasskey: (app.solina.refuge.core.passkey.PasskeyRecord) -> Unit = {},
+    attachments: List<VaultRepository.AttachmentMeta> = emptyList(),
+    onAddAttachment: () -> Unit = {},
+    onOpenAttachment: (VaultRepository.AttachmentMeta) -> Unit = {},
+    onRemoveAttachment: (VaultRepository.AttachmentMeta) -> Unit = {},
 ) {
     val c = Refuge.colors
     val str = Refuge.strings
@@ -1063,6 +1069,7 @@ fun DetailScreen(
     var revealedFields by remember(item?.id) { mutableStateOf(setOf<Int>()) }
     var confirmDelete by remember(item?.id) { mutableStateOf(false) }
     var showHistory by remember(item?.id) { mutableStateOf(false) }
+    var confirmRemoveFileId by remember(item?.id) { mutableStateOf<String?>(null) }
 
     if (item == null) {
         LaunchedEffect(Unit) { onBack() }
@@ -1318,6 +1325,68 @@ fun DetailScreen(
                     Text("یادداشت", color = c.muted, fontSize = 12.sp)
                     Text(p.note, color = c.text, fontSize = 15.sp, lineHeight = 26.sp)
                 }
+            }
+        }
+
+        // ── پیوست‌های رمزگذاری‌شده (فاز ۴) ──
+        // لمس ردیف، فایل را رمزگشایی و با برنامهٔ مناسب باز می‌کند؛ «حذف» دو مرحله‌ای است.
+        Card {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        if (str.isFa) "پیوست‌ها" else "Attachments",
+                        color = c.text,
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.weight(1f),
+                    )
+                    if (attachments.isNotEmpty()) Text("(${attachments.size.fa()})", color = c.muted, fontSize = 13.sp)
+                }
+                Text(
+                    if (str.isFa) "پیوست‌ها رمزگذاری‌شده ذخیره می‌شوند و در بکاپ نسخهٔ ۲ هم برمی‌گردند (حداکثر ۱۰ مگابایت برای هر فایل)."
+                    else "Attachments are stored encrypted and are included in v2 backups (max 10 MB per file).",
+                    color = c.muted,
+                    fontSize = 12.sp,
+                    lineHeight = 18.sp,
+                )
+                attachments.forEachIndexed { idx, meta ->
+                    if (idx > 0) Box(Modifier.fillMaxWidth().height(1.dp).background(c.divider))
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Column(
+                            Modifier.weight(1f).clickable(role = Role.Button) { onOpenAttachment(meta) }.padding(vertical = 8.dp),
+                            verticalArrangement = Arrangement.spacedBy(2.dp),
+                        ) {
+                            Text(meta.name, color = c.text, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Text(
+                                "${Backup.formatByteSize(meta.size.toInt())} · ${meta.mime}",
+                                color = c.muted,
+                                fontSize = 12.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                        Text(
+                            if (confirmRemoveFileId == meta.fileId) "مطمئنید؟" else "حذف",
+                            color = c.secondary,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Medium,
+                            modifier = Modifier.clickable(role = Role.Button) {
+                                if (confirmRemoveFileId == meta.fileId) {
+                                    confirmRemoveFileId = null
+                                    onRemoveAttachment(meta)
+                                } else {
+                                    confirmRemoveFileId = meta.fileId
+                                }
+                            }.padding(8.dp),
+                        )
+                    }
+                }
+                OutlineButton(
+                    if (str.isFa) "افزودن پیوست" else "Add attachment",
+                    RefugeIcons.Attach,
+                    Modifier.fillMaxWidth(),
+                    onAddAttachment,
+                )
             }
         }
 

@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- مسیرهای FileProvider برای باز کردن پیوست‌های رمزگشایی‌شده (فاز ۴):
+     فقط زیرپوشهٔ attachments در کش خصوصی برنامه؛ جای دیگری به اشتراک گذاشته نمی‌شود. -->
+<paths>
+    <cache-path name="attachments" path="attachments/" />
+</paths>
