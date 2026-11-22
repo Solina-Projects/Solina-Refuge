@@ -429,6 +429,7 @@ internal fun messageFor(result: UnlockResult): String? = when (result) {
     UnlockResult.WrongPassword -> "رمز اصلی درست نیست."
     UnlockResult.InvalidPhrase -> "عبارت بازیابی معتبر نیست. تعداد کلمات و املای آن‌ها را بررسی کنید."
     UnlockResult.Corrupt -> "فایل خزانه خراب یا دست‌کاری شده است."
+    UnlockResult.IntegrityFailed -> "امضای این نسخه با امضای انتشار Refuge هم‌خوانی ندارد؛ خزانه باز نمی‌شود. نسخه را فقط از منبع رسمی بگیرید."
     is UnlockResult.Wait -> "به‌خاطر تلاش‌های ناموفق، ${waitText(result.millis)} صبر کنید و دوباره امتحان کنید."
 }
 
@@ -440,6 +441,7 @@ internal fun messageForPin(result: PinResult): String? = when (result) {
     is PinResult.Wait -> "به‌خاطر تلاش‌های ناموفق، ${waitText(result.millis)} صبر کنید و دوباره امتحان کنید."
     PinResult.NoPin -> "پینی تنظیم نشده است."
     PinResult.Error -> "باز کردن با پین ممکن نشد."
+    PinResult.IntegrityFailed -> "امضای این نسخه با امضای انتشار Refuge هم‌خوانی ندارد؛ خزانه باز نمی‌شود. نسخه را فقط از منبع رسمی بگیرید."
 }
 
 /** رمز مشتق از کلید خزانه برای اسنپ‌شات خودکار؛ فقط وقتی خزانه باز است و فایل، اسنپ‌شات خودکار است. */
@@ -958,7 +960,10 @@ private fun Root(
                 LaunchedEffect(Unit) {
                     if (auth.hasBiometric()) {
                         delay(300)
-                        auth.unlockWithBiometric(activity) { }
+                        auth.unlockWithBiometric(
+                            activity,
+                            onIntegrityFailed = { message = "امضای این نسخه با امضای انتشار Refuge هم‌خوانی ندارد؛ خزانه باز نمی‌شود." },
+                        ) { }
                     }
                 }
                 VaultUnlockScreen(
@@ -975,7 +980,12 @@ private fun Root(
                             message = messageFor(result)
                         }
                     },
-                    onBiometric = { auth.unlockWithBiometric(activity) { ok -> if (!ok) message = "با اثر انگشت باز نشد. از رمز اصلی استفاده کنید." } },
+                    onBiometric = {
+                        auth.unlockWithBiometric(
+                            activity,
+                            onIntegrityFailed = { message = "امضای این نسخه با امضای انتشار Refuge هم‌خوانی ندارد؛ خزانه باز نمی‌شود." },
+                        ) { ok -> if (!ok) message = "با اثر انگشت باز نشد. از رمز اصلی استفاده کنید." }
+                    },
                     onForgot = { message = null; mode = UnlockMode.Recovery },
                     pinReady = auth.hasPin(),
                     onPin = { pin ->
@@ -1050,6 +1060,15 @@ private fun MainApp(
     val unreadable by repo.unreadable.collectAsState()
     val report = remember(items) { SecurityAnalyzer.analyze(items) }
     val breachState by viewModel.breachState.collectAsState()
+    // هشدارهای محیطی (روت/دیباگر): فقط هشدار، هیچ‌وقت قفل یا محدودیت نیست.
+    // در شروع برنامه یک بار حساب شده‌اند و در خانه (مرکز امنیت) نشان داده می‌شوند.
+    val environmentWarnings = remember(container.environment) {
+        buildList {
+            val env = container.environment
+            if (env.isProbablyRooted) add("دستگاه روت‌شده به نظر می‌رسد. Refuge کامل کار می‌کند، ولی روی دستگاه روت‌شده خزانه امنیت کمتری دارد؛ رمز اصلی را با کسی به اشتراک نگذارید.")
+            if (env.debuggerAttached) add("دیباگر به برنامه وصل است؛ این معمولاً یعنی نسخهٔ در حال توسعه است، نه نسخهٔ انتشار.")
+        }
+    }
     val externalAccounts by container.externalAccounts.accounts.collectAsState()
     val pendingOAuthUri by activity.pendingOAuthCallback.collectAsState()
 
@@ -1516,6 +1535,7 @@ private fun MainApp(
                         }
                         is UnlockResult.WrongPassword -> switchMessage = "رمز این خزانه درست نیست."
                         is UnlockResult.Wait -> switchMessage = "به‌خاطر تلاش‌های ناموفق، کمی صبر کنید و دوباره امتحان کنید."
+                        is UnlockResult.IntegrityFailed -> switchMessage = "امضای این نسخه با امضای انتشار Refuge هم‌خوانی ندارد؛ خزانه باز نمی‌شود."
                         else -> switchMessage = "این خزانه باز نشد؛ شاید فایلش خراب است."
                     }
                     pw.fill('\u0000')
@@ -2042,6 +2062,7 @@ private fun MainApp(
                             items = items,
                             report = report,
                             breachState = breachState,
+                            environmentWarnings = environmentWarnings,
                             onRunBreachCheck = { viewModel.runBreachCheck(items) },
                             onLock = { container.session.lock() },
                             onOpenItem = { detailId = it },

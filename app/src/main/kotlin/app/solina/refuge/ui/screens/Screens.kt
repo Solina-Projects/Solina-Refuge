@@ -208,6 +208,8 @@ fun HomeScreen(
     items: List<VaultItem>,
     report: SecurityReport,
     breachState: BreachScanState = BreachScanState(),
+    /** هشدارهای محیطی (روت/دیباگر)؛ فقط هشدار، هیچ‌وقت قفل یا محدودیت نیست. */
+    environmentWarnings: List<String> = emptyList(),
     onRunBreachCheck: () -> Unit = {},
     onLock: () -> Unit,
     onOpenItem: (String) -> Unit,
@@ -247,6 +249,20 @@ fun HomeScreen(
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     IconAction(if (showSecrets) RefugeIcons.EyeOff else RefugeIcons.Eye, if (showSecrets) "پنهان کردن رمزها" else "نمایش رمزها", tint = c.text, background = c.container, onClick = onToggleShowSecrets)
                     IconAction(RefugeIcons.Lock, str.lockVault, tint = c.text, background = c.container, onClick = onLock)
+                }
+            }
+        }
+
+        // بنر هشدار محیطی (روت/دیباگر): فقط اطلاع‌رسانی است؛ اپ کامل کار می‌کند.
+        if (environmentWarnings.isNotEmpty()) {
+            Card(background = c.secondaryContainer, padding = 12.dp) {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    environmentWarnings.forEach { warning ->
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Top) {
+                            SIcon(RefugeIcons.Warning, c.onSecondaryContainer, 20.dp)
+                            Text(warning, color = c.onSecondaryContainer, fontSize = 13.sp, lineHeight = 19.sp, modifier = Modifier.weight(1f))
+                        }
+                    }
                 }
             }
         }

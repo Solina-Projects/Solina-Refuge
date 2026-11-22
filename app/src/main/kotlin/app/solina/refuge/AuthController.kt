@@ -28,6 +28,8 @@ sealed interface UnlockResult {
     data object InvalidPhrase : UnlockResult
     data object Corrupt : UnlockResult
     data class Wait(val millis: Long) : UnlockResult
+    /** امضای release تأیید نشد؛ خزانه باز نمی‌شود (فقط در بیلد release). */
+    data object IntegrityFailed : UnlockResult
 }
 
 /** نتیجهٔ حذف خزانه. */
@@ -107,6 +109,7 @@ class AuthController(
      * در موفقیت، کلید خزانهٔ قبلی از حافظه پاک و خزانهٔ جدید باز می‌شود.
      */
     suspend fun switchVault(id: String, password: CharArray): UnlockResult = withContext(Dispatchers.Default) {
+        if (container.integrityBlocked) return@withContext UnlockResult.IntegrityFailed
         if (!registry.exists(id)) return@withContext UnlockResult.Corrupt
         val targetFiles = filesFor(id)
         val wait = remainingWaitMillis(targetFiles)
@@ -133,6 +136,7 @@ class AuthController(
 
     /** تعویض خزانهٔ فعال با عبارت بازیابی ۲۴ کلمه‌ای مخصوص همان خزانه. */
     suspend fun switchVaultWithRecovery(id: String, phrase: String): UnlockResult = withContext(Dispatchers.Default) {
+        if (container.integrityBlocked) return@withContext UnlockResult.IntegrityFailed
         if (!registry.exists(id)) return@withContext UnlockResult.Corrupt
         val targetFiles = filesFor(id)
         val wait = remainingWaitMillis(targetFiles)
@@ -252,6 +256,7 @@ class AuthController(
         }
 
     suspend fun unlockWithPassword(password: CharArray): UnlockResult = withContext(Dispatchers.Default) {
+        if (container.integrityBlocked) return@withContext UnlockResult.IntegrityFailed
         val wait = remainingWaitMillis()
         if (wait > 0) return@withContext UnlockResult.Wait(wait)
         val header = try {
@@ -270,6 +275,7 @@ class AuthController(
     }
 
     suspend fun unlockWithRecovery(phrase: String): UnlockResult = withContext(Dispatchers.Default) {
+        if (container.integrityBlocked) return@withContext UnlockResult.IntegrityFailed
         val wait = remainingWaitMillis()
         if (wait > 0) return@withContext UnlockResult.Wait(wait)
         val header = try {
@@ -350,6 +356,7 @@ class AuthController(
 
     /** باز کردن با پین؛ در صورت موفقیت نشست باز می‌شود (مثل رمز اصلی). */
     suspend fun unlockWithPin(pin: CharArray): PinResult = withContext(Dispatchers.Default) {
+        if (container.integrityBlocked) return@withContext PinResult.IntegrityFailed
         when (val r = container.pinUnlock.unlockWithPin(pin, registry.activeId())) {
             is PinResult.Success -> {
                 session.unlock(r.vaultKey)
@@ -389,8 +396,17 @@ class AuthController(
         BiometricKeystore.deleteKey()
     }
 
-    /** @param onResult true اگر باز شد؛ false در لغو یا خطا (رمز اصلی همیشه در دسترس است). */
-    fun unlockWithBiometric(activity: FragmentActivity, onResult: (Boolean) -> Unit) {
+    /** @param onResult true اگر باز شد؛ false در لغو یا خطا (رمز اصلی همیشه در دسترس است).
+     *  @param onIntegrityFailed وقتی امضای release تأیید نشده باشد، به‌جای تلاش بیومتریک صدا زده می‌شود. */
+    fun unlockWithBiometric(
+        activity: FragmentActivity,
+        onResult: (Boolean) -> Unit,
+        onIntegrityFailed: (() -> Unit)? = null,
+    ) {
+        if (container.integrityBlocked) {
+            onIntegrityFailed?.invoke()
+            return
+        }
         val blob = files.readBiometric() ?: return onResult(false)
         val cipher = try {
             BiometricKeystore.newUnlockCipher(blob, registry.activeId())

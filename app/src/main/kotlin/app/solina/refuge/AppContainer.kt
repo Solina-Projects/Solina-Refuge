@@ -8,6 +8,9 @@ import android.os.SystemClock
 import app.solina.refuge.auth.ExternalAccountManager
 import app.solina.refuge.core.passkey.PasskeyManager
 import app.solina.refuge.core.security.BiometricKeystore
+import app.solina.refuge.core.security.EnvironmentCheck
+import app.solina.refuge.core.security.EnvironmentStatus
+import app.solina.refuge.core.security.IntegrityResult
 import app.solina.refuge.core.security.PinUnlockManager
 import app.solina.refuge.core.security.SecurityPrefs
 import app.solina.refuge.core.security.VaultFiles
@@ -43,6 +46,24 @@ class AppContainer(context: Context) {
     val passkeys = PasskeyManager(appContext)
     val externalAccounts = ExternalAccountManager(appContext)
     val session = VaultSession(clock = SystemClock::elapsedRealtime)
+    /**
+     * وضعیت محیطی دستگاه؛ یک بار در شروع برنامه حساب می‌شود.
+     * روت و دیباگر فقط هشدارند؛ فقط عدم‌تأیید امضا در بیلد release باز کردن خزانه را ممنوع می‌کند.
+     * (DiagLog.init پیش از ساخت container در RefugeApplication.onCreate صدا زده شده است.)
+     */
+    val environment: EnvironmentStatus = EnvironmentCheck.checkAll(appContext).also { env ->
+        if (env.isProbablyRooted) DiagLog.log("ENV", "root signals: ${env.rootSignals.joinToString(",")}")
+        if (env.debuggerAttached) DiagLog.log("ENV", "debugger attached")
+        when (env.integrity) {
+            IntegrityResult.Skipped -> DiagLog.log("ENV", "integrity check skipped (debug)")
+            IntegrityResult.Ok -> DiagLog.log("ENV", "release signature ok")
+            is IntegrityResult.Mismatch -> DiagLog.log("ENV", "release signature MISMATCH")
+            IntegrityResult.Unknown -> DiagLog.log("ENV", "release signature unknown")
+        }
+    }
+
+    /** در release و فقط وقتی امضا تأیید نشد، باز کردن خزانه ممنوع است. */
+    val integrityBlocked: Boolean get() = environment.integrityBlocked
     val database by lazy { RefugeDatabase.open(appContext) }
     val itemStore by lazy { RoomItemStore(database) }
     val repository by lazy { VaultRepository(itemStore, session, vaultId = { vaultRegistry.activeId() }) }

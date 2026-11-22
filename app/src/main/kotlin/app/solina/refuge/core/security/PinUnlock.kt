@@ -126,6 +126,9 @@ sealed interface PinResult {
 
     /** خطای غیرمنتظره (مثلاً Keystore یا دادهٔ خراب). */
     data object Error : PinResult
+
+    /** امضای release تأیید نشد؛ خزانه باز نمی‌شود (فقط در بیلد release). */
+    data object IntegrityFailed : PinResult
 }
 
 /** ذخیره‌سازی و بررسی پین؛ لایهٔ خالص رمزنگاری در [PinCrypto] است تا قابل تست بماند. */

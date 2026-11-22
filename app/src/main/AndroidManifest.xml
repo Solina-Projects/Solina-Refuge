@@ -33,6 +33,17 @@
         </intent>
     </queries>
 
+    <!-- برای بررسی روت: دیدنِ فقط همین پکیج‌های مدیریت روت (بدون QUERY_ALL_PACKAGES).
+         نبودنشان چیزی را ثابت نمی‌کند؛ فقط یک سیگنال هشدار است، نه قفل. -->
+    <queries>
+        <package android:name="com.topjohnwu.magisk" />
+        <package android:name="eu.chainfire.supersu" />
+        <package android:name="com.koushikdutta.superuser" />
+        <package android:name="me.phh.superuser" />
+        <package android:name="com.kingroot.kinguser" />
+        <package android:name="com.kingo.root" />
+    </queries>
+
     <uses-feature android:name="android.hardware.camera" android:required="false" />
     <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
 
