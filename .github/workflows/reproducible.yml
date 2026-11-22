@@ -1,0 +1,62 @@
+name: Reproducible Build Check
+
+on:
+  push:
+    branches: [main, master, 'preview/**', 'audit/**']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  reproducible:
+    name: Build release APK twice, compare SHA-256
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.10.2'
+
+      - name: Build #1
+        run: |
+          gradle :app:clean :app:assembleRelease --stacktrace
+          sha256sum app/build/outputs/apk/release/app-release.apk | tee build1.sha256
+
+      - name: Build #2
+        run: |
+          gradle :app:clean :app:assembleRelease --stacktrace
+          sha256sum app/build/outputs/apk/release/app-release.apk | tee build2.sha256
+
+      - name: Compare hashes (fail on mismatch)
+        run: |
+          echo "build #1: $(cat build1.sha256)"
+          echo "build #2: $(cat build2.sha256)"
+          H1=$(cut -d' ' -f1 build1.sha256)
+          H2=$(cut -d' ' -f1 build2.sha256)
+          if [ "$H1" != "$H2" ]; then
+            echo "::error::APK is not reproducible: two clean builds differ."
+            echo "See docs/REPRODUCIBLE_BUILD.md for how to investigate."
+            exit 1
+          fi
+          echo "Reproducible: both builds are byte-identical ($H1)"
+
+      - name: Upload APK (build #2)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Solina-Refuge-release-unsigned-apk
+          path: app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: ignore
+          retention-days: 14
