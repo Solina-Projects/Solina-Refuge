@@ -99,9 +99,11 @@ internal fun Field(
 
 /**
  * ایجاد/ویرایش ورودی (Login، Card، Identity، Note) با پشتیبانی از دسته‌بندی، آیکون اختصاصی و TOTP/HOTP.
+ * [onScanCard] وقتی داده شود، در بخش کارت دکمهٔ «اسکن کارت با دوربین» نشان داده می‌شود و
+ * پیش‌نویس فعلی را تحویل می‌دهد تا پس از اسکن/انصراف، نوشته‌های کاربر از دست نرود.
  */
 @Composable
-fun EditScreen(initial: ItemPayload?, isNew: Boolean, busy: Boolean, onSave: (ItemPayload) -> Unit, onCancel: () -> Unit) {
+fun EditScreen(initial: ItemPayload?, isNew: Boolean, busy: Boolean, onSave: (ItemPayload) -> Unit, onCancel: () -> Unit, onScanCard: ((ItemPayload) -> Unit)? = null) {
     val c = Refuge.colors
     val str = Refuge.strings
     val start = initial ?: ItemPayload()
@@ -151,6 +153,43 @@ fun EditScreen(initial: ItemPayload?, isNew: Boolean, busy: Boolean, onSave: (It
     val totpError = if (totp.isNotBlank() && Base32.decode(totp) == null) {
         if (str.isFa) "راز OTP باید Base32 معتبر باشد (A–Z و ۲–۷)" else "OTP secret must be valid Base32"
     } else null
+
+    // پیش‌نویس فعلی از روی فیلدها؛ هم ذخیره و هم «اسکن کارت» از همین استفاده می‌کنند.
+    fun currentPayload(): ItemPayload = start.copy(
+        kind = kind,
+        title = title.trim(),
+        category = category.trim(),
+        tags = tags,
+        icon = icon,
+        favorite = favorite,
+        username = username.trim(),
+        password = password,
+        website = website.trim(),
+        totpSecret = totp.trim(),
+        otpType = otpType,
+        totpDigits = otpDigits,
+        totpAlgorithm = otpAlgo,
+        totpCounter = if (otpType == OtpType.HOTP) (otpCounter.toLongOrNull() ?: 0L).coerceAtLeast(0L) else 0L,
+        note = note,
+        customFields = customFields.mapNotNull {
+            app.solina.refuge.core.storage.CustomField.sanitize(it.label, it.value, it.hidden)
+        }.take(app.solina.refuge.core.storage.CustomField.MAX_FIELDS),
+        bankName = bankName.trim(),
+        cardHolder = holder.trim(),
+        cardNumber = number,
+        cardExpiry = expiry.trim(),
+        cardCvv = cvv,
+        cardPin = cardPin,
+        fullName = fullName.trim(),
+        email = email.trim(),
+        phone = phone.trim(),
+        nationalId = nationalId.trim(),
+        company = company.trim(),
+        address = address.trim(),
+        city = city.trim(),
+        postalCode = postalCode.trim(),
+        country = country.trim(),
+    )
 
     Column(
         Modifier.fillMaxSize().imePadding().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp),
@@ -339,6 +378,24 @@ fun EditScreen(initial: ItemPayload?, isNew: Boolean, busy: Boolean, onSave: (It
                     Box(Modifier.weight(1f)) { Field("CVV2", cvv, { cvv = it.filter { ch -> ch.isDigit() }.take(4) }, mono = true, keyboard = KeyboardType.NumberPassword) }
                 }
                 Field(if (str.isFa) "رمز کارت / PIN (اختیاری)" else "Card PIN (optional)", cardPin, { cardPin = it.filter { ch -> ch.isDigit() }.take(8) }, mono = true, hidden = true, keyboard = KeyboardType.NumberPassword)
+                // اسکن کارت با دوربین (Track C): فقط شماره و تاریخ خوانده می‌شود،
+                // CVV2 و PIN هرگز اسکن نمی‌شوند؛ نتیجه اول در صفحهٔ تأیید نشان داده می‌شود.
+                if (onScanCard != null) {
+                    Box(
+                        Modifier
+                            .fillMaxWidth()
+                            .height(48.dp)
+                            .clip(RoundedCornerShape(24.dp))
+                            .background(c.container)
+                            .clickable(role = Role.Button) { onScanCard(currentPayload()) },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(
+                            if (str.isFa) "اسکن کارت با دوربین" else "Scan card with camera",
+                            color = c.primary, fontSize = 14.sp, fontWeight = FontWeight.Medium,
+                        )
+                    }
+                }
             }
             ItemKind.Identity -> {
                 Field(if (str.isFa) "نام و نام خانوادگی" else "Full Name", fullName, { fullName = it })
@@ -434,43 +491,7 @@ fun EditScreen(initial: ItemPayload?, isNew: Boolean, busy: Boolean, onSave: (It
                 .clickable(enabled = !busy, role = Role.Button) {
                     tried = true
                     if (title.isNotBlank() && totpError == null) {
-                        onSave(
-                            start.copy(
-                                kind = kind,
-                                title = title.trim(),
-                                category = category.trim(),
-                                tags = tags,
-                                icon = icon,
-                                favorite = favorite,
-                                username = username.trim(),
-                                password = password,
-                                website = website.trim(),
-                                totpSecret = totp.trim(),
-                                otpType = otpType,
-                                totpDigits = otpDigits,
-                                totpAlgorithm = otpAlgo,
-                                totpCounter = if (otpType == OtpType.HOTP) (otpCounter.toLongOrNull() ?: 0L).coerceAtLeast(0L) else 0L,
-                                note = note,
-                                customFields = customFields.mapNotNull {
-                                    app.solina.refuge.core.storage.CustomField.sanitize(it.label, it.value, it.hidden)
-                                }.take(app.solina.refuge.core.storage.CustomField.MAX_FIELDS),
-                                bankName = bankName.trim(),
-                                cardHolder = holder.trim(),
-                                cardNumber = number,
-                                cardExpiry = expiry.trim(),
-                                cardCvv = cvv,
-                                cardPin = cardPin,
-                                fullName = fullName.trim(),
-                                email = email.trim(),
-                                phone = phone.trim(),
-                                nationalId = nationalId.trim(),
-                                company = company.trim(),
-                                address = address.trim(),
-                                city = city.trim(),
-                                postalCode = postalCode.trim(),
-                                country = country.trim(),
-                            ),
-                        )
+                        onSave(currentPayload())
                     }
                 },
             contentAlignment = Alignment.Center,
