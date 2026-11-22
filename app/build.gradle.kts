@@ -5,6 +5,11 @@ plugins {
     alias(libs.plugins.ksp)
 }
 
+/** مقدار یک Property گریدل (-Pname) یا متغیر محیطی؛ null اگر هیچ‌کدام نباشد یا خالی باشد. */
+fun propOrEnv(propName: String, envName: String): String? =
+    providers.gradleProperty(propName).orNull?.takeIf { it.isNotBlank() }
+        ?: providers.environmentVariable(envName).orNull?.takeIf { it.isNotBlank() }
+
 android {
     namespace = "app.solina.refuge"
     compileSdk = 35
@@ -15,6 +20,28 @@ android {
         targetSdk = 35
         versionCode = 1
         versionName = "1.0.0"
+        // اثر انگشت SHA-256 گواهی امضای انتشار (مقدار عمومی؛ در assetlinks.json هم هست).
+        // فقط برای بررسی یکپارچگی در بیلد release استفاده می‌شود؛ بیلد debug این بررسی را کاملاً رد می‌کند.
+        buildConfigField("String", "RELEASE_SIGNING_SHA256", "\"03B600658806A03D5F56B610E6C9BA51E62DD292C09B530E96C8E3AA8A139CD7\"")
+    }
+
+    // امضای انتشار — فقط کد، هیچ رازی اینجا نیست. هر چهار مقدار باید از Propertyهای
+    // گریدل (-Psolina.keystore.*) یا متغیرهای محیطی (SOLINA_KEYSTORE_*) برسند؛
+    // اگر حتی یکی نباشد، release مثل امروز بدون امضا ساخته می‌شود و CI سبز می‌ماند.
+    // مرحلهٔ CI که keystore را از Secret گیت‌هاب باز می‌کند در .github/workflows/build_apk.yml است.
+    signingConfigs {
+        val keystoreFile = propOrEnv("solina.keystore.file", "SOLINA_KEYSTORE_FILE")
+        val keystorePassword = propOrEnv("solina.keystore.password", "SOLINA_KEYSTORE_PASSWORD")
+        val keyAlias = propOrEnv("solina.key.alias", "SOLINA_KEY_ALIAS")
+        val keyPassword = propOrEnv("solina.key.password", "SOLINA_KEY_PASSWORD")
+        if (keystoreFile != null && keystorePassword != null && keyAlias != null && keyPassword != null) {
+            create("release") {
+                storeFile = file(keystoreFile)
+                storePassword = keystorePassword
+                this.keyAlias = keyAlias
+                this.keyPassword = keyPassword
+            }
+        }
     }
 
     buildTypes {
@@ -25,6 +52,11 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
             )
+            // فقط وقتی هر چهار مقدار امضا رسیده باشد، با همان امضا می‌سازد؛
+            // وگرنه (مثل CI بدون Secret) release بدون امضا ساخته می‌شود.
+            if (signingConfigs.findByName("release") != null) {
+                signingConfig = signingConfigs.getByName("release")
+            }
         }
     }
 
@@ -42,6 +74,7 @@ android {
         jvmTarget = "17"
     }
     buildFeatures {
+        buildConfig = true
         compose = true
     }
     dependenciesInfo {
