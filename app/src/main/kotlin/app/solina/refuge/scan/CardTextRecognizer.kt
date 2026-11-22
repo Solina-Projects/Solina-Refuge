@@ -1,6 +1,7 @@
 package app.solina.refuge.scan
 
 import android.graphics.Bitmap
+import androidx.camera.core.ExperimentalGetImage
 import androidx.camera.core.ImageProxy
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
@@ -27,6 +28,7 @@ object CardTextRecognizer {
      * صدا زده می‌شود. در صورت خطا، لیست خالی برمی‌گردد تا صفحهٔ اسکن بتواند
      * ورودی دستی را پیشنهاد کند.
      */
+    @OptIn(ExperimentalGetImage::class)
     fun recognizeImage(image: ImageProxy, executor: Executor, onResult: (List<String>) -> Unit) {
         val mediaImage = image.image
         if (mediaImage == null) {
