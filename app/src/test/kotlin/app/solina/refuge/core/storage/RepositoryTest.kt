@@ -12,7 +12,8 @@ import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Test
 
-class FakeStore : ItemStore {
+/** ذخیرهٔ آزمایشی در حافظه؛ برای پیوست، در AttachmentsTest باز شده است (open). */
+open class FakeStore : ItemStore {
     val items = LinkedHashMap<String, StoredItem>()
     val hist = ArrayList<StoredHistory>()
     override suspend fun all() = items.values.toList()

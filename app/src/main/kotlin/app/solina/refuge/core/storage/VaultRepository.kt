@@ -1,5 +1,8 @@
 package app.solina.refuge.core.storage
 
+import app.solina.refuge.core.backup.BackupAttachmentData
+import app.solina.refuge.core.backup.DecodedBackup
+import app.solina.refuge.core.crypto.AttachmentCrypto
 import app.solina.refuge.core.crypto.SealedItem
 import app.solina.refuge.core.crypto.VaultCrypto
 import app.solina.refuge.core.crypto.wipe
@@ -11,7 +14,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.util.UUID
 
-class ImportStats(val added: Int, val skipped: Int)
+class ImportStats(val added: Int, val skipped: Int, val attachmentsAdded: Int = 0, val attachmentsSkipped: Int = 0)
 
 class VaultLockedException : IllegalStateException("vault is locked")
 
@@ -24,6 +27,7 @@ class VaultRepository(
     private val session: VaultSession,
     private val clock: () -> Long = System::currentTimeMillis,
     private val newId: () -> String = { UUID.randomUUID().toString() },
+    private val newFileId: () -> String = { UUID.randomUUID().toString() },
 ) {
     private val _items = MutableStateFlow<List<VaultItem>>(emptyList())
     val items: StateFlow<List<VaultItem>> = _items.asStateFlow()
@@ -153,27 +157,150 @@ class VaultRepository(
      * افزودن دسته‌ای (ایمپورت/بازیابی). ورودی‌ای که عیناً مشابه موجود باشد رد می‌شود؛ تاریخ‌های اصلی حفظ می‌شوند.
      */
     suspend fun importItems(list: List<ItemPayload>): ImportStats = lock.withLock {
-        val known = _items.value.map { fingerprint(it.payload) }.toHashSet()
+        importItemsLocked(list).first
+    }
+
+    /**
+     * بازیابی کامل بکاپ (v1 یا v2) شامل پیوست‌ها. ورودی‌ها مثل [importItems] وارد
+     * می‌شوند؛ پیوست هر ورودی به همان ورودی می‌چسبد — چه تازه ساخته شده باشد چه
+     * تکراری و از پیش موجود. دادهٔ پیوست با کلید خزانهٔ فعلی دوباره بسته می‌شود،
+     * پس بازیابی روی خزانهٔ دیگر هم کار می‌کند. پیوستی که شناسهٔ فایلش از پیش
+     * هست رد می‌شود (بازیابی دوبارهٔ همان بکاپ، تکراری نمی‌سازد).
+     */
+    suspend fun importBackup(decoded: DecodedBackup): ImportStats = lock.withLock {
+        val (stats, idByIndex) = importItemsLocked(decoded.items)
+        var attsAdded = 0
+        var attsSkipped = 0
+        if (decoded.attachments.isNotEmpty()) {
+            withKey { key ->
+                for (a in decoded.attachments) {
+                    val targetId = idByIndex[a.itemIndex]
+                    if (targetId == null) { attsSkipped++; continue }
+                    if (store.attachment(a.fileId) != null) { attsSkipped++; continue }
+                    try {
+                        val sealed = AttachmentCrypto.seal(key, a.fileId, a.data)
+                        store.saveAttachment(
+                            StoredAttachment(
+                                a.fileId, targetId, a.name, a.mime,
+                                a.data.size.toLong(), clock(), sealed.wrappedDek, sealed.sealedData,
+                            ),
+                        )
+                        attsAdded++
+                    } catch (e: Exception) {
+                        // پیوست خراب یا بیش از حد بزرگ: فقط همین یکی رد می‌شود، نه کل بازیابی.
+                        attsSkipped++
+                    }
+                }
+            }
+            if (attsAdded > 0) _localChanges.value++
+        }
+        ImportStats(stats.added, stats.skipped, attsAdded, attsSkipped)
+    }
+
+    /**
+     * منطق مشترک ایمپورت ورودی‌ها؛ با قفلِ گرفته‌شده صدا زده می‌شود.
+     * برمی‌گرداند: آمار ایمپورت + نگاشت «شمارهٔ ردیف در فهرست ورودی ← شناسهٔ ورودی»
+     * (برای چسباندن پیوست‌های بکاپ v2 به ورودیِ درست، حتی وقتی ورودی تکراری است).
+     */
+    private suspend fun importItemsLocked(list: List<ItemPayload>): Pair<ImportStats, Map<Int, String>> {
+        val fingerprintToId = _items.value.associateBy({ fingerprint(it.payload) }, { it.id }).toMutableMap()
         val now = clock()
         val created = ArrayList<VaultItem>()
+        val idByIndex = HashMap<Int, String>()
         var skipped = 0
         withKey { key ->
-            for (p in list) {
-                if (!known.add(fingerprint(p))) { skipped++; continue }
+            for ((index, p) in list.withIndex()) {
+                val fp = fingerprint(p)
+                val existingId = fingerprintToId[fp]
+                if (existingId != null) {
+                    skipped++
+                    idByIndex[index] = existingId
+                    continue
+                }
                 val c = if (p.createdAt > 0) p.createdAt else now
                 val e = if (p.editedAt > 0) p.editedAt else c
                 val item = VaultItem(newId(), 1, p.copy(createdAt = c, editedAt = e))
                 store.save(seal(key, item, now), null, MAX_HISTORY)
                 syncTaskDue(item)
+                fingerprintToId[fp] = item.id
+                idByIndex[index] = item.id
                 created += item
             }
         }
         _items.value = (_items.value + created).sortedBy { it.payload.title.lowercase() }
         if (created.isNotEmpty()) _localChanges.value++
-        ImportStats(created.size, skipped)
+        return ImportStats(created.size, skipped) to idByIndex
     }
 
-    /** تکثیر ورودی: کپی بار (payload) با شناسه و ویرایش تازه؛ عنوان « (کپی)» می‌گیرد. */
+    // ── پیوست‌های رمزگذاری‌شده (فاز ۴) ──
+
+    /** فرادادهٔ پیوست‌های یک ورودی (بدون باز کردن محتوای رمز). */
+    suspend fun attachments(itemId: String): List<AttachmentMeta> =
+        store.attachments(itemId).map { AttachmentMeta(it.fileId, it.itemId, it.name, it.mime, it.size, it.addedAt) }
+
+    /**
+     * افزودن پیوست به یک ورودیِ زنده. فایل با DEK تصادفیِ خودش بسته می‌شود
+     * (AttachmentCrypto) و فقط بلابِ بسته‌شده ذخیره می‌شود.
+     * @throws IllegalArgumentException ورودی نباشد، حذف‌شده باشد یا فایل بیش از ۱۰ مگابایت باشد.
+     */
+    suspend fun addAttachment(itemId: String, name: String, mime: String, data: ByteArray): AttachmentMeta = lock.withLock {
+        val row = store.get(itemId) ?: throw IllegalArgumentException("item not found")
+        if (row.deletedAt != null) throw IllegalArgumentException("item is deleted")
+        val cleanName = name.trim().take(MAX_ATTACHMENT_NAME).ifBlank { "file" }
+        val cleanMime = mime.trim().take(MAX_ATTACHMENT_MIME).ifBlank { "application/octet-stream" }
+        val fileId = newFileId()
+        val now = clock()
+        val meta = withKey { key ->
+            val sealed = AttachmentCrypto.seal(key, fileId, data)
+            store.saveAttachment(StoredAttachment(fileId, itemId, cleanName, cleanMime, data.size.toLong(), now, sealed.wrappedDek, sealed.sealedData))
+            AttachmentMeta(fileId, itemId, cleanName, cleanMime, data.size.toLong(), now)
+        }
+        _localChanges.value++
+        meta
+    }
+
+    /**
+     * باز کردن محتوای یک پیوست. بایت‌های برگشتی متنِ اصلیِ فایل‌اند؛ فراخواننده
+     * پس از مصرف باید آن‌ها را پاک کند ([wipe]).
+     * @throws IllegalArgumentException پیوست نباشد؛ @throws AuthenticationFailedException دست‌کاری یا کلید اشتباه.
+     */
+    suspend fun openAttachment(fileId: String): ByteArray {
+        val row = store.attachment(fileId) ?: throw IllegalArgumentException("attachment not found")
+        return withKey { key ->
+            AttachmentCrypto.open(key, row.fileId, AttachmentCrypto.SealedAttachment(row.wrappedDek, row.sealedData))
+        }
+    }
+
+    /** حذف یک پیوست (فقط همان فایل؛ ورودی دست نمی‌خورد). */
+    suspend fun removeAttachment(fileId: String) = lock.withLock {
+        store.deleteAttachment(fileId)
+        _localChanges.value++
+    }
+
+    /**
+     * همهٔ پیوست‌های ورودی‌ها برای بکاپ v2: دادهٔ رمزگشایی‌شدهٔ هر پیوست به‌همراه
+     * شمارهٔ ردیف ورودیِ صاحبش. پیوستِ خراب (باز نمی‌شود) رد می‌شود تا کل بکاپ خراب نشود.
+     * فراخواننده پس از [app.solina.refuge.core.backup.Backup.encode] باید
+     * بایت‌های `data` را پاک کند ([wipe]).
+     */
+    suspend fun exportAttachmentsForBackup(itemIds: List<String>): List<BackupAttachmentData> = withKey { key ->
+        val out = ArrayList<BackupAttachmentData>()
+        for ((index, itemId) in itemIds.withIndex()) {
+            for (row in store.attachments(itemId)) {
+                try {
+                    val data = AttachmentCrypto.open(key, row.fileId, AttachmentCrypto.SealedAttachment(row.wrappedDek, row.sealedData))
+                    out += BackupAttachmentData(index, row.fileId, row.name, row.mime, data)
+                } catch (e: Exception) {
+                    // پیوست خراب: در بکاپ نمی‌آید، ولی بقیهٔ بکاپ ساخته می‌شود.
+                }
+            }
+        }
+        out
+    }
+
+    /** تکثیر ورودی: کپی بار (payload) با شناسه و ویرایش تازه؛ عنوان « (کپی)» می‌گیرد.
+     * پیوست‌ها کپی نمی‌شوند (عمداً: هر کپی باید DEK تازه بگیرد)؛ کاربر می‌تواند
+     * دوباره به کپی پیوست اضافه کند. */
     suspend fun duplicate(id: String): VaultItem? = lock.withLock {
         val current = _items.value.firstOrNull { it.id == id } ?: return@withLock null
         val now = clock()
@@ -198,6 +325,8 @@ class VaultRepository(
         // blob خود tombstone طبق قرارداد همگام‌سازی خالی می‌ماند.
         val archived = old?.let { StoredHistory(id, it.rev, now, it.wrappedItemKey, it.blob) }
         store.delete(id, now, current.rev + 1, archived)
+        // پیوست‌ها عمداً می‌مانند: بازگردانی از سطل زباله آن‌ها را هم برمی‌گرداند؛
+        // فقط حذف دائمی (purge) آن‌ها را می‌زداید.
         store.deleteTaskDue(id)
         _items.value = _items.value.filterNot { it.id == id }
         _localChanges.value++
@@ -205,6 +334,16 @@ class VaultRepository(
 
     /** یک ورودی حذف‌شده (tombstone) به‌همراه آخرین نسخهٔ قابل بازیابی‌اش. */
     data class TrashedItem(val id: String, val rev: Long, val deletedAt: Long, val payload: ItemPayload)
+
+    /** فرادادهٔ یک پیوست (بدون محتوای رمز) برای نمایش در UI و بکاپ. */
+    data class AttachmentMeta(
+        val fileId: String,
+        val itemId: String,
+        val name: String,
+        val mime: String,
+        val size: Long,
+        val addedAt: Long,
+    )
 
     /** فهرست سطل زباله: tombstoneهایی که آخرین نسخه‌شان رمزگشایی می‌شود. */
     suspend fun trashedItems(): List<TrashedItem> = withKey { key ->
@@ -240,9 +379,10 @@ class VaultRepository(
         item
     }
 
-    /** حذف دائمی یک ورودی از سطل زباله (ردیف + تاریخچه). */
+    /** حذف دائمی یک ورودی از سطل زباله (ردیف + تاریخچه + پیوست‌ها). */
     suspend fun purgeTrashed(id: String) = lock.withLock {
         store.purge(id)
+        store.deleteAttachmentsForItem(id)
         store.deleteTaskDue(id)
         _localChanges.value++
     }
@@ -258,6 +398,7 @@ class VaultRepository(
         }
         for (row in expired) {
             store.purge(row.id)
+            store.deleteAttachmentsForItem(row.id)
             store.deleteTaskDue(row.id)
         }
         if (expired.isNotEmpty()) _localChanges.value++
@@ -304,5 +445,9 @@ class VaultRepository(
 
     companion object {
         const val MAX_HISTORY = 10
+        /** حداکثر طول نام پیوست در فراداده (نام‌های بلندتر بریده می‌شوند). */
+        const val MAX_ATTACHMENT_NAME = 255
+        /** حداکثر طول نوع MIME پیوست در فراداده. */
+        const val MAX_ATTACHMENT_MIME = 128
     }
 }
