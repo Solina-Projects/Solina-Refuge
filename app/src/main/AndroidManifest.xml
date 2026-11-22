@@ -68,6 +68,17 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <!-- App Links + Passkey: دامنهٔ solina-projects.github.io با assetlinks.json
+                 (پکیج app.solina.refuge + اثر انگشت گواهی انتشار) تأیید می‌شود؛
+                 فقط روی نصبِ امضاشده با همان گواهی کار می‌کند، نه روی بیلد debug CI. -->
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:host="solina-projects.github.io"
+                    android:scheme="https" />
+            </intent-filter>
             <!-- بازگشت امن OAuth 2.0 + PKCE (RFC 8252) برای اتصال اختیاری Google و GitHub -->
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
