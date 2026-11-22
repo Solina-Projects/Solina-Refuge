@@ -116,6 +116,9 @@ import app.solina.refuge.ui.screens.PinSetupScreen
 import app.solina.refuge.ui.screens.RecoveryEntryScreen
 import app.solina.refuge.ui.screens.RecoveryWordsScreen
 import app.solina.refuge.ui.screens.ResetPasswordScreen
+import app.solina.refuge.scan.CardScanResult
+import app.solina.refuge.ui.screens.CardScanConfirmScreen
+import app.solina.refuge.ui.screens.CardScanScreen
 import app.solina.refuge.ui.screens.ScanScreen
 import app.solina.refuge.ui.screens.SettingsScreen
 import app.solina.refuge.ui.screens.VaultScreen
@@ -155,6 +158,7 @@ class MainActivity : FragmentActivity() {
         const val RC_NOTIFICATION = 1006
         const val RC_CAMERA = 1007
         const val RC_GALLERY_IMAGE = 1008
+        const val RC_CARD_GALLERY_IMAGE = 1010
         const val RC_WELCOME_RESTORE_FILE = 1009
         const val RC_ATTACHMENT_FILE = 1010
     }
@@ -1064,6 +1068,11 @@ private fun MainApp(
     var generator by remember { mutableStateOf(false) }
     var toast by remember { mutableStateOf<String?>(null) }
     var scanning by remember { mutableStateOf(false) }
+    // اسکن کارت بانکی (Track C): پیش‌نویس ویرایشگر هنگام رفتن به اسکن نگه داشته می‌شود
+    // تا با بازگشت (تأیید/انصراف/ورود دستی) نوشته‌های کاربر از دست نرود.
+    var cardScanning by remember { mutableStateOf(false) }
+    var cardConfirm by remember { mutableStateOf<CardScanResult?>(null) }
+    var scanDraft by remember { mutableStateOf<ItemPayload?>(null) }
     var showExternalAccounts by remember { mutableStateOf(false) }
     var oauthBusy by remember { mutableStateOf(false) }
     var oauthMessage by remember { mutableStateOf<String?>(null) }
@@ -1587,7 +1596,7 @@ private fun MainApp(
         )
     }
 
-    val inSub = generator || editing || detailId != null || scanning || dataStep != null || showTrash ||
+    val inSub = generator || editing || detailId != null || scanning || cardScanning || cardConfirm != null || dataStep != null || showTrash ||
         showExternalAccounts || showWebDavConnect || showChangePassword || showPinSetup
 
     BackHandler(enabled = inSub) {
@@ -1602,8 +1611,10 @@ private fun MainApp(
                 else { dataStep = DataStep.Menu; pendingRestore = null; pendingRestoreInfo = null; pendingRestoreFileName = null; pendingImport = null }
                 dataMessage = null
             }
+            cardConfirm != null -> { cardConfirm = null; editing = true }
+            cardScanning -> { cardScanning = false; editing = true }
             scanning -> scanning = false
-            editing -> { editing = false; prefill = null }
+            editing -> { editing = false; prefill = null; scanDraft = null }
             generator -> generator = false
             else -> detailId = null
         }
@@ -1869,11 +1880,38 @@ private fun MainApp(
                         },
                     )
                     scanning -> ScanScreen(activity, onResult = ::onScanned, onCancel = { scanning = false }, onToast = { toast = it })
+                    cardScanning -> CardScanScreen(
+                        activity,
+                        onDetected = { result -> cardScanning = false; cardConfirm = result },
+                        onManualEntry = { cardScanning = false; editing = true },
+                        onCancel = { cardScanning = false; editing = true },
+                        onToast = { toast = it },
+                    )
+                    cardConfirm != null -> CardScanConfirmScreen(
+                        result = cardConfirm!!,
+                        initialBank = scanDraft?.bankName.orEmpty(),
+                        initialHolder = scanDraft?.cardHolder.orEmpty(),
+                        onConfirm = { number, expiry, bank, holder ->
+                            val base = scanDraft ?: ItemPayload(kind = ItemKind.Card)
+                            scanDraft = base.copy(
+                                kind = ItemKind.Card,
+                                cardNumber = number,
+                                cardExpiry = expiry,
+                                bankName = bank,
+                                cardHolder = holder,
+                            )
+                            cardConfirm = null
+                            editing = true
+                        },
+                        onRescan = { cardConfirm = null; cardScanning = true },
+                        onCancel = { cardConfirm = null; editing = true },
+                    )
                     editing -> EditScreen(
-                        initial = if (detailId == null) prefill else detailItem?.payload,
+                        initial = scanDraft ?: if (detailId == null) prefill else detailItem?.payload,
                         isNew = detailId == null,
                         busy = saving,
-                        onCancel = { editing = false; prefill = null },
+                        onCancel = { editing = false; prefill = null; scanDraft = null },
+                        onScanCard = { draft -> scanDraft = draft; editing = false; cardScanning = true },
                         onSave = { payload ->
                             saving = true
                             scope.launch {
@@ -1889,6 +1927,7 @@ private fun MainApp(
                                     }
                                     editing = false
                                     prefill = null
+                                    scanDraft = null
                                 } catch (e: Exception) {
                                     toast = "ذخیره نشد: خزانه قفل است یا خطای ذخیره‌سازی"
                                 } finally {

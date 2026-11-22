@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- فقط برای اسکن QR کدهای TOTP/HOTP و فقط وقتی صفحهٔ اسکن باز است؛ دوربین اجباری نیست. -->
+    <!-- فقط برای اسکن QR کدهای TOTP/HOTP و اسکن کارت بانکی، و فقط وقتی صفحهٔ اسکن باز است؛ دوربین اجباری نیست. -->
     <uses-permission android:name="android.permission.CAMERA" />
 
     <!-- نوتیفیکیشن محلی خطا (بدون ارسال داده و بدون متن حساس در اعلان). -->

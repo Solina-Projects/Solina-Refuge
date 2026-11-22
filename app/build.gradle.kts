@@ -81,6 +81,12 @@ dependencies {
     implementation(libs.androidx.camera.lifecycle)
     implementation(libs.androidx.camera.view)
 
+    // BEGIN TRACK C — اسکن کارت بانکی (فقط این بلوک به Track C تعلق دارد)
+    // ML Kit Text Recognition، مدل همراه (bundled): تشخیص متن کاملاً روی دستگاه،
+    // بدون دانلود مدل و بدون هیچ فراخوانی شبکه؛ عکس کارت هرگز ذخیره/ارسال نمی‌شود.
+    implementation("com.google.mlkit:text-recognition:16.0.1")
+    // END TRACK C
+
     implementation(libs.androidx.documentfile)
     implementation(libs.androidx.autofill)
     implementation(libs.androidx.credentials)
