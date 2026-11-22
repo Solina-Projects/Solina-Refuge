@@ -78,4 +78,44 @@ class PinUnlockTest {
         assertEquals(32, pinKek.size)
         assertNotEquals(0, pinKek.fold(0) { acc, b -> acc + b })
     }
+
+    @Test fun pinWrapIsBoundToVault() {
+        val kek = PinCrypto.derivePinKek("1234".toByteArray(), salt)
+        val wrapped = PinCrypto.wrapVaultKey(kek, vaultKey, "work")
+        // همان خزانه باز می‌شود؛ خزانهٔ دیگر نه — حتی با همان پین و همان salt.
+        val out = PinCrypto.unwrapVaultKey(kek, wrapped, "work")
+        assertTrue(out.contentEquals(vaultKey))
+        try {
+            PinCrypto.unwrapVaultKey(kek, wrapped, "personal")
+            fail("PIN blob of another vault must not unwrap")
+        } catch (e: AuthenticationFailedException) {
+            // مورد انتظار
+        }
+        try {
+            PinCrypto.unwrapVaultKey(kek, wrapped)
+            fail("PIN blob of vault 'work' must not unwrap as the default vault")
+        } catch (e: AuthenticationFailedException) {
+            // مورد انتظار
+        }
+    }
+
+    @Test fun legacyPinBlobMigratesToVaultAad() {
+        val kek = PinCrypto.derivePinKek("1234".toByteArray(), salt)
+        // blob قدیمی با AAD بدون شناسهٔ خزانه («refuge/pin/v1»).
+        val legacy = app.solina.refuge.core.crypto.Aead.seal(
+            kek, vaultKey, "refuge/pin/v1".toByteArray(Charsets.US_ASCII),
+        )
+        val result = PinCrypto.unwrapVaultKeyDetailed(kek, legacy, "work")
+        assertTrue(result.wasLegacy)
+        assertTrue(result.vaultKey.contentEquals(vaultKey))
+        // پس از مهاجرت، blob تازه با AAD خزانه بسته می‌شود و فقط همان خزانه بازش می‌کند.
+        val migrated = PinCrypto.wrapVaultKey(kek, result.vaultKey, "work")
+        assertFalse(PinCrypto.unwrapVaultKeyDetailed(kek, migrated, "work").wasLegacy)
+        try {
+            PinCrypto.unwrapVaultKey(kek, migrated, "personal")
+            fail("migrated blob must stay vault-bound")
+        } catch (e: AuthenticationFailedException) {
+            // مورد انتظار
+        }
+    }
 }

@@ -50,6 +50,8 @@ object BreachChecker {
                 requestMethod = "GET"
                 connectTimeout = timeoutMillis
                 readTimeout = timeoutMillis
+                // ریدایرکت دنبال نمی‌شود تا پیشوند هش به میزبان دیگری نرود.
+                instanceFollowRedirects = false
                 setRequestProperty("Add-Padding", "true")
                 setRequestProperty("User-Agent", "Solina-Refuge")
             }

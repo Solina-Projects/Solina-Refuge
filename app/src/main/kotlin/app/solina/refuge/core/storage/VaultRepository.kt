@@ -247,7 +247,9 @@ class VaultRepository(
      * @throws IllegalArgumentException ورودی نباشد، حذف‌شده باشد یا فایل بیش از ۱۰ مگابایت باشد.
      */
     suspend fun addAttachment(itemId: String, name: String, mime: String, data: ByteArray): AttachmentMeta = lock.withLock {
-        val row = store.get(itemId) ?: throw IllegalArgumentException("item not found")
+        // شناسهٔ خزانه حتماً داده می‌شود؛ پیش‌فرضِ «default» در نسخهٔ قبل باعث می‌شد
+        // افزودن پیوست در خزانه‌های غیرپیش‌فرض همیشه با «item not found» رد شود.
+        val row = store.get(itemId, vaultId()) ?: throw IllegalArgumentException("item not found")
         if (row.deletedAt != null) throw IllegalArgumentException("item is deleted")
         val cleanName = name.trim().take(MAX_ATTACHMENT_NAME).ifBlank { "file" }
         val cleanMime = mime.trim().take(MAX_ATTACHMENT_MIME).ifBlank { "application/octet-stream" }
@@ -269,6 +271,9 @@ class VaultRepository(
      */
     suspend fun openAttachment(fileId: String): ByteArray {
         val row = store.attachment(fileId) ?: throw IllegalArgumentException("attachment not found")
+        // پیوست‌ها ستون خزانه ندارند؛ مالکیت از راه ورودیِ صاحب بررسی می‌شود تا پیوستِ
+        // خزانهٔ دیگر (با شناسهٔ فایلِ شناخته‌شده) با کلید این خزانه باز نشود.
+        if (store.get(row.itemId, vaultId()) == null) throw IllegalArgumentException("attachment not found")
         return withKey { key ->
             AttachmentCrypto.open(key, row.fileId, AttachmentCrypto.SealedAttachment(row.wrappedDek, row.sealedData))
         }
@@ -276,8 +281,11 @@ class VaultRepository(
 
     /** حذف یک پیوست (فقط همان فایل؛ ورودی دست نمی‌خورد). */
     suspend fun removeAttachment(fileId: String) = lock.withLock {
-        store.deleteAttachment(fileId)
-        _localChanges.value++
+        val row = store.attachment(fileId)
+        if (row != null && store.get(row.itemId, vaultId()) != null) {
+            store.deleteAttachment(fileId)
+            _localChanges.value++
+        }
     }
 
     /**

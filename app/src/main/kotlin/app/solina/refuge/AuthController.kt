@@ -175,6 +175,8 @@ class AuthController(
         }
         runCatching { container.itemStore.wipeVault(id) }
         filesFor(id).deleteVaultDir()
+        // فایل رمزگشایی‌شدهٔ پیوستِ این خزانه ممکن است در کش مانده باشد.
+        container.clearAttachmentCache()
         registry.remove(id)
         // پین فقط به یک خزانه تعلق دارد؛ اگر پینِ خزانهٔ حذف‌شده بود، غیرفعال می‌شود.
         if (container.pinUnlock.pinVaultId() == id) container.pinUnlock.disablePin()
@@ -364,7 +366,7 @@ class AuthController(
     fun enableBiometric(activity: FragmentActivity, onDone: (Boolean) -> Unit) {
         val vk = session.keyCopy() ?: return onDone(false)
         val cipher = try {
-            BiometricKeystore.newEnrollCipher()
+            BiometricKeystore.newEnrollCipher(registry.activeId())
         } catch (e: Exception) {
             vk.wipe()
             return onDone(false)
@@ -391,7 +393,7 @@ class AuthController(
     fun unlockWithBiometric(activity: FragmentActivity, onResult: (Boolean) -> Unit) {
         val blob = files.readBiometric() ?: return onResult(false)
         val cipher = try {
-            BiometricKeystore.newUnlockCipher(blob)
+            BiometricKeystore.newUnlockCipher(blob, registry.activeId())
         } catch (e: Exception) {
             // اثر انگشت جدید اضافه شده یا کلید از بین رفته: میان‌بر غیرفعال می‌شود، رمز اصلی می‌ماند.
             disableBiometric()
@@ -402,6 +404,9 @@ class AuthController(
                 session.unlock(BiometricKeystore.finishUnlock(c, blob))
                 onResult(true)
             } catch (e: Exception) {
+                // blob قدیمیِ بدون AAD خزانه یا خراب: برای همیشه باز نمی‌شود؛ میان‌بر
+                // غیرفعال می‌شود تا کاربر با رمز اصلی بیومتریک را دوباره فعال کند.
+                disableBiometric()
                 onResult(false)
             }
         }

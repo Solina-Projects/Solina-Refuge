@@ -100,6 +100,11 @@ class IdentityAndBackupTest {
         assertEquals(4, stats2.skipped)
     }
 
+    @Test fun oversizedBackupRejectedBeforeParsing() {
+        val bytes = ByteArray(Backup.MAX_BACKUP_BYTES + 1)
+        assertThrows(BackupFormatException::class.java) { Backup.inspect(bytes) }
+    }
+
     @Test fun authenticatorOnlyBackupRejectsEmptyOtpSetAndInspectRejectsGarbage() {
         assertThrows(BackupFormatException::class.java) {
             Backup.encodeAuthenticatorOnly(

@@ -87,6 +87,14 @@ object Backup {
     private const val HEADER_SIZE = 4 + 1 + 12 + SALT_SIZE
     private val INFO = "refuge/backup/v1".toByteArray(Charsets.US_ASCII)
 
+    /**
+     * سقف اندازهٔ فایل بکاپ برای رمزگشایی (۶۴ مگابایت). خواندنِ فایل بازیابی در UI
+     * هم همین سقف را دارد؛ این بررسیِ دوم جلوی خوراندنِ مستقیمِ بایت‌های غول‌پیکر
+     * به رمزگشا/JSON را می‌گیرد تا حافظه پر نشود. بکاپِ معتبرِ خزانه‌های معمولی
+     * خیلی کوچک‌تر از این است.
+     */
+    const val MAX_BACKUP_BYTES = 64 * 1024 * 1024
+
     private fun key(password: CharArray, salt: ByteArray, params: KdfParams): ByteArray {
         val pw = VaultCrypto.passwordBytes(password)
         try {
@@ -114,6 +122,7 @@ object Backup {
 
     /** اعتبارسنجی هدر و پارامترهای KDF پیش از نمایش صفحهٔ ورود رمز بازیابی. */
     fun inspect(bytes: ByteArray): BackupHeaderInfo {
+        if (bytes.size > MAX_BACKUP_BYTES) throw BackupFormatException("فایل بکاپ بیش از حد بزرگ است.")
         if (bytes.size < HEADER_SIZE + 28 || !bytes.copyOfRange(0, 4).contentEquals(MAGIC)) {
             throw BackupFormatException("این فایل یک بکاپ Refuge نیست.")
         }

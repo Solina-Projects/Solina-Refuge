@@ -70,6 +70,15 @@ class AppContainer(context: Context) {
     fun cancelAutoLock() = handler.removeCallbacks(lockCheck)
 
     /**
+     * پاک‌کردن فایل‌های رمزگشایی‌شدهٔ پیوست از کش خصوصی برنامه. این فایل‌ها متنِ اصلیِ
+     * پیوست‌اند و باز کردن پیوست با برنامهٔ دیگر آن‌ها را می‌سازد؛ پس پاک‌سازی امن
+     * خزانه و حذف خزانه بدون پاک‌کردن آن‌ها ناقص می‌ماند.
+     */
+    fun clearAttachmentCache() {
+        runCatching { File(appContext.cacheDir, "attachments").deleteRecursively() }
+    }
+
+    /**
      * خروج کامل و پاک‌سازی امن تمام اطلاعات محلی (دیتابیس با secure_delete + VACUUM،
      * فایل‌های هدر خزانه، کلید بیومتریک Keystore، اتصال همگام‌سازی و حساب‌های خارجی).
      */
@@ -77,6 +86,7 @@ class AppContainer(context: Context) {
         cancelAutoLock()
         session.lock()
         repository.clear()
+        clearAttachmentCache()
         runCatching { itemStore.wipeAll() }
         runCatching { BiometricKeystore.deleteKey() }
         runCatching { pinUnlock.disablePin() }
