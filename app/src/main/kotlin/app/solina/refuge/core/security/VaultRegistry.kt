@@ -186,9 +186,11 @@ class VaultRegistry(
 
     private fun read(): RegistryState? {
         if (!registryFile.isFile) return null
-        return runCatching {
+        // توجه: returnهای داخل runCatching باید محلی باشند (return@runCatching)؛
+        // return ساده از خود read() برمی‌گردد و fallback بازسازی از دیسک را دور می‌زند.
+        val parsed = runCatching {
             val lines = registryFile.readLines(Charsets.UTF_8).filter { it.isNotBlank() }
-            if (lines.isEmpty()) return null
+            if (lines.isEmpty()) return@runCatching null
             val active = lines.first().removePrefix("active:").trim()
             val vaults = lines.drop(1).mapNotNull { line ->
                 val parts = line.split('\t')
@@ -201,9 +203,10 @@ class VaultRegistry(
                 if (id.isBlank() || name.isBlank()) return@mapNotNull null
                 VaultInfo(id, name, createdAt)
             }
-            if (vaults.isEmpty() || vaults.none { it.id == active }) return null
+            if (vaults.isEmpty() || vaults.none { it.id == active }) return@runCatching null
             RegistryState(active, vaults)
-        }.getOrNull() ?: rebuildFromDisk()
+        }.getOrNull()
+        return parsed ?: rebuildFromDisk()
     }
 
     /**

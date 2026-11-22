@@ -199,7 +199,7 @@ class VaultRepository(
         val old = store.get(id, vaultId())
         // نسخهٔ فعلی را در تاریخچه بایگانی می‌کنیم تا از سطل زباله قابل بازگردانی باشد؛
         // blob خود tombstone طبق قرارداد همگام‌سازی خالی می‌ماند.
-        val archived = old?.let { StoredHistory(id, it.rev, now, it.wrappedItemKey, it.blob) }
+        val archived = old?.let { StoredHistory(id, it.rev, now, it.wrappedItemKey, it.blob, vaultId()) }
         store.delete(id, now, current.rev + 1, archived, vaultId())
         store.deleteTaskDue(id, vaultId())
         _items.value = _items.value.filterNot { it.id == id }
