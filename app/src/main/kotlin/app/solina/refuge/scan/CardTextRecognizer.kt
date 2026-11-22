@@ -1,8 +1,8 @@
-package app.solina.refuge.scan
-
 // ImageProxy.image نیاز به opt-in دارد (ExperimentalGetImage)؛ lint فقط opt-inِ
-// سطح فایل را می‌پذیرد، نه @OptIn روی تابع.
+// سطح فایل را می‌پذیرد، نه @OptIn روی تابع. حاشیه‌نویسیِ @file باید پیش از package بیاید.
 @file:OptIn(androidx.camera.core.ExperimentalGetImage::class)
+
+package app.solina.refuge.scan
 
 import android.graphics.Bitmap
 import androidx.camera.core.ImageProxy
