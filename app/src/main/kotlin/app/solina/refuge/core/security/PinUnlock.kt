@@ -7,6 +7,7 @@ import app.solina.refuge.core.crypto.Argon2id
 import app.solina.refuge.core.crypto.AuthenticationFailedException
 import app.solina.refuge.core.crypto.Hkdf
 import app.solina.refuge.core.crypto.KdfParams
+import app.solina.refuge.core.crypto.MultiVaultDesign
 import app.solina.refuge.core.crypto.randomBytes
 import app.solina.refuge.core.crypto.wipe
 import kotlinx.coroutines.flow.MutableStateFlow
