@@ -5,4 +5,11 @@
         <item name="android:statusBarColor">@android:color/transparent</item>
         <item name="android:navigationBarColor">@android:color/transparent</item>
     </style>
+
+    <!-- صفحهٔ لوگوی شروع: گرادیان آیکن (میانگین فیروزه‌ای تا سرمه‌ای) + نمادِ سفیدِ آیکن، هم‌سبک بقیهٔ برنامه‌های Solina -->
+    <style name="Theme.Refuge.Splash" parent="Theme.SplashScreen">
+        <item name="windowSplashScreenBackground">#05778A</item>
+        <item name="windowSplashScreenAnimatedIcon">@drawable/ic_launcher_foreground</item>
+        <item name="postSplashScreenTheme">@style/Theme.Refuge</item>
+    </style>
 </resources>
