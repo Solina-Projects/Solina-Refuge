@@ -84,6 +84,14 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+      - name: Upload signed release APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Solina-Refuge-release-apk
+          path: app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error
+          retention-days: 30
+
       - name: Lint summary
         if: always()
         run: |
